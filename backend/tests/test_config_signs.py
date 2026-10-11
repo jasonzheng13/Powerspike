@@ -1,6 +1,6 @@
 """Direction priors: every ETF in exposure.yaml has an expected sign, every market an event_sign."""
 
-from dislocation_desk import config, expose
+from powerspike import config, expose
 
 
 def test_every_etf_has_an_expected_sign():

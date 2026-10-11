@@ -3,7 +3,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from dislocation_desk import api
+from powerspike import api
 
 
 @pytest.fixture

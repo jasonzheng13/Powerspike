@@ -2,7 +2,7 @@ import httpx
 import pandas as pd
 import pytest
 
-from dislocation_desk.ingest import polymarket, to_grid
+from powerspike.ingest import polymarket, to_grid
 
 T0 = pd.Timestamp("2026-10-01 12:00", tz="UTC")
 S0 = int(T0.timestamp())

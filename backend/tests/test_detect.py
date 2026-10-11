@@ -2,8 +2,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from dislocation_desk.detect import DetectorParams, detect, detect_drifts, detect_jumps, logit, robust_z
-from dislocation_desk.synthetic import add_drift, add_fat_finger, add_jump, demo_market, quiet_market
+from powerspike.detect import DetectorParams, detect, detect_drifts, detect_jumps, logit, robust_z
+from powerspike.synthetic import add_drift, add_fat_finger, add_jump, demo_market, quiet_market
 
 
 def test_logit_symmetry():

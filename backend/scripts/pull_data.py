@@ -18,8 +18,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pandas as pd  # noqa: E402
 
-from dislocation_desk import config, expose  # noqa: E402
-from dislocation_desk.ingest import cache, equities, fetch, to_grid  # noqa: E402
+from powerspike import config, expose  # noqa: E402
+from powerspike.ingest import cache, equities, fetch, to_grid  # noqa: E402
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--days", type=int, default=7)

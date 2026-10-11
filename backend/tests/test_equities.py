@@ -2,7 +2,7 @@
 
 import pandas as pd
 
-from dislocation_desk.ingest import equities
+from powerspike.ingest import equities
 
 
 def test_next_open_from_friday_evening_is_monday_open():

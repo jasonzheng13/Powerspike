@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from dislocation_desk import validate  # noqa: E402
+from powerspike import validate  # noqa: E402
 
 res = validate.run()
 print(res.to_string(index=False))

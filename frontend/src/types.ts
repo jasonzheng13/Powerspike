@@ -1,4 +1,4 @@
-/** Wire types for the backend API (backend/dislocation_desk/api.py). */
+/** Wire types for the backend API (backend/powerspike/api.py). */
 
 export interface Market {
   id: string;

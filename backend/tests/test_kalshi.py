@@ -1,4 +1,4 @@
-from dislocation_desk.ingest import kalshi
+from powerspike.ingest import kalshi
 
 
 def _candle(ts: int, trade=None, bid=None, ask=None, vol="0.00") -> dict:

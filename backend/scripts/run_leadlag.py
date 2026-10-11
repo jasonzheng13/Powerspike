@@ -10,8 +10,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from dislocation_desk import config, leadlag  # noqa: E402
-from dislocation_desk.ingest import cache  # noqa: E402
+from powerspike import config, leadlag  # noqa: E402
+from powerspike.ingest import cache  # noqa: E402
 
 rows = leadlag.run_cached(cache.connect(), config.markets())
 for ll in rows:

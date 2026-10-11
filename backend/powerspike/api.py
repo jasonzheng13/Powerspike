@@ -1,4 +1,4 @@
-"""HTTP API for the TypeScript frontend.   cd backend && uvicorn dislocation_desk.api:app --reload
+"""HTTP API for the TypeScript frontend.   cd backend && uvicorn powerspike.api:app --reload
 
 The detector, explainer and exposure lookup run here; the browser only owns the
 replay clock. Every alert carries `confirmed_at`, and the frontend filters on
@@ -33,7 +33,7 @@ SYNTHETIC = {"id": "synthetic-demo", "name": "Fed cuts in December (synthetic de
              "venue": "synthetic", "event_type": "fed_rates"}
 DEFAULT_NEWS_QUERY = '"Federal Reserve" OR Powell'
 
-app = FastAPI(title="Dislocation Desk API", version="0.1.0")
+app = FastAPI(title="Powerspike API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],

@@ -1,4 +1,4 @@
-# Markets Dislocation Desk watches.
+# Markets Powerspike watches.
 #
 # event_type links a market to config/exposure.yaml (who's exposed).
 # event_sign: +1 when a rising YES price means the event's odds (as defined in

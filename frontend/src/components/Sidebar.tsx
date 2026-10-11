@@ -83,7 +83,7 @@ export default function Sidebar(p: Props) {
   return (
     <aside className="sidebar">
       <div className="brand">
-        <h1>Dislocation Desk</h1>
+        <h1>Powerspike</h1>
         <p>Which event odds just broke, why, and which names are exposed.</p>
       </div>
 

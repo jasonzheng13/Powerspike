@@ -11,8 +11,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from dislocation_desk import config  # noqa: E402
-from dislocation_desk.ingest import cache, pg  # noqa: E402
+from powerspike import config  # noqa: E402
+from powerspike.ingest import cache, pg  # noqa: E402
 
 if not config.DATABASE_URL:
     sys.exit("DD_DATABASE_URL is not set (see .env.example)")

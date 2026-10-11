@@ -29,12 +29,12 @@ flowchart LR
 
 | Step | Goes in | Comes out | When it runs | Code |
 |---|---|---|---|---|
-| 1. Download | Which market, which dates | Price and volume per minute | Only when someone runs a script by hand | `backend/scripts/pull_data.py`, `backend/dislocation_desk/ingest/` |
+| 1. Download | Which market, which dates | Price and volume per minute | Only when someone runs a script by hand | `backend/scripts/pull_data.py`, `backend/powerspike/ingest/` |
 | 2. Save | Those rows | A file, `backend/data/cache.duckdb` | Same time as step 1 | `ingest/cache.py` |
 | 3. Spot | The saved rows for one market | A list of alerts | On the server, when you pick a market or move a detector slider | `detect.py` |
 | 4. Explain | One alert's times and prices | A one- or two-sentence reason | On the server, the first time that alert's card is shown | `explain.py` |
 | 5. Who's affected | The market's topic, e.g. "Fed rates" | Fund tickers and company names | On the server, once per topic | `expose.py`, `backend/config/exposure.yaml` |
-| 6. Show | Everything above | The web page | In the browser, continuously | `frontend/src/` (React), fed by `backend/dislocation_desk/api.py` |
+| 6. Show | Everything above | The web page | In the browser, continuously | `frontend/src/` (React), fed by `backend/powerspike/api.py` |
 
 The app has two halves. The **server** (Python, `backend/`) does steps 1–5. The **browser page**
 (`frontend/`) asks the server for the price series and the alerts, and runs the replay clock itself.

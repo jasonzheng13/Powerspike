@@ -7,10 +7,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from dislocation_desk import leadlag
-from dislocation_desk.detect import Spike, detect
-from dislocation_desk.ingest import equities
-from dislocation_desk.synthetic import add_equity_move, add_jump, demo_equity, demo_market, equity_sessions, quiet_market
+from powerspike import leadlag
+from powerspike.detect import Spike, detect
+from powerspike.ingest import equities
+from powerspike.synthetic import add_equity_move, add_jump, demo_equity, demo_market, equity_sessions, quiet_market
 
 SESSIONS = ["2025-12-09", "2025-12-10", "2025-12-11"]
 MIN = pd.Timedelta(minutes=1)
@@ -201,7 +201,7 @@ def test_demo_market_jump_is_in_session_and_demo_equity_reacts():
 
 
 def test_run_cached_scores_every_cached_market_against_cached_etfs(tmp_path):
-    from dislocation_desk.ingest import cache
+    from powerspike.ingest import cache
 
     con = cache.connect(tmp_path / "c.duckdb")
     cache.save(con, "demo", demo_market())

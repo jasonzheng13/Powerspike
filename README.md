@@ -1,10 +1,10 @@
-# Dislocation Desk
+# Powerspike
 
 **Which event odds just broke, why, and which names are exposed.**
 
 Hack Knight 2026 · track: *Prediction Markets as a Financial Signal* (Diameter Capital Partners).
 
-A credit analyst can't watch a thousand Polymarket and Kalshi markets. Dislocation Desk watches the
+A credit analyst can't watch a thousand Polymarket and Kalshi markets. Powerspike watches the
 macro ones (Fed, CPI, tariffs, shutdown, recession), flags the moments the odds reprice, explains the
 move from the news in that window, and lists the credit ETFs and companies exposed.
 
@@ -18,7 +18,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r backend/requirements.txt
 cp .env.example .env            # add GEMINI_API_KEY and SEC_USER_AGENT
 cd backend && pytest            # detector + API tests on synthetic data
-uvicorn dislocation_desk.api:app --reload --port 8000
+uvicorn powerspike.api:app --reload --port 8000
 
 # frontend (TypeScript: React + Vite), in a second terminal
 cd frontend && npm install
@@ -46,7 +46,7 @@ python scripts/find_markets.py --kalshi KXFED
 python scripts/pull_data.py --start 2025-12-09 --end 2025-12-11
 ```
 
-Fix any field names the smoke test complains about in `backend/dislocation_desk/ingest/`. The Kalshi series
+Fix any field names the smoke test complains about in `backend/powerspike/ingest/`. The Kalshi series
 tickers in `config/markets.yaml` are guesses too.
 
 ## Architecture
@@ -61,14 +61,14 @@ Kalshi ─────┘                                  ▲        └─► 
 
 | # | Component | File | Status |
 |---|---|---|---|
-| 1 | **Ingest**: price + volume into the bar cache | `dislocation_desk/ingest/` | Live-tested on both venues; Polymarket volume comes from the Data API trades feed. Bars live in **Tiger Cloud** (TimescaleDB hypertable + 15-min continuous aggregate) when `DD_DATABASE_URL` is set, else a local DuckDB file |
-| 2 | **Detect**: jump + drift alerts | `dislocation_desk/detect.py` | **Working, tested** |
-| 3 | **Explain**: headlines in the window, Gemini writes the "why" | `dislocation_desk/explain.py` | Written; falls back to a template without a key |
-| 4 | **Expose**: event to ETFs + companies naming the risk in filings | `dislocation_desk/expose.py`, `config/exposure.yaml` | ETF map done; EDGAR search written, not live-tested |
-| 5 | **API**: markets, series, alerts, explain, exposure over HTTP | `dislocation_desk/api.py` | **Working, tested** |
+| 1 | **Ingest**: price + volume into the bar cache | `powerspike/ingest/` | Live-tested on both venues; Polymarket volume comes from the Data API trades feed. Bars live in **Tiger Cloud** (TimescaleDB hypertable + 15-min continuous aggregate) when `DD_DATABASE_URL` is set, else a local DuckDB file |
+| 2 | **Detect**: jump + drift alerts | `powerspike/detect.py` | **Working, tested** |
+| 3 | **Explain**: headlines in the window, Gemini writes the "why" | `powerspike/explain.py` | Written; falls back to a template without a key |
+| 4 | **Expose**: event to ETFs + companies naming the risk in filings | `powerspike/expose.py`, `config/exposure.yaml` | ETF map done; EDGAR search written, not live-tested |
+| 5 | **API**: markets, series, alerts, explain, exposure over HTTP | `powerspike/api.py` | **Working, tested** |
 | 5 | **Dashboard**: chart, alert markers, alert cards, replay | `frontend/` (React + TypeScript) | **Working** on synthetic and cached data |
-| · | Replay clock | `dislocation_desk/replay.py` | Working |
-| · | Validation harness | `dislocation_desk/validate.py`, `validation/known_events.yaml` | Working; needs real events + cached data |
+| · | Replay clock | `powerspike/replay.py` | Working |
+| · | Validation harness | `powerspike/validate.py`, `validation/known_events.yaml` | Working; needs real events + cached data |
 
 ### The detector (`detect.py`)
 
@@ -104,7 +104,7 @@ All parameters live in `DetectorParams` and are exposed as sliders in the dashbo
 backend/
   config/markets.yaml         markets to watch
   config/exposure.yaml        event type → ETFs, EDGAR query, direction note
-  dislocation_desk/
+  powerspike/
     api.py                    FastAPI app the frontend talks to (also serves frontend/dist)
     detect.py                 spike detector (jump + drift)
     ingest/                   polymarket.py, kalshi.py, equities.py (yfinance, NYSE sessions), cache.py (DuckDB or Tiger), pg.py (Tiger Cloud)

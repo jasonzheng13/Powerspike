@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Dislocation Desk (Hack Knight 2026, track: *Prediction Markets as a Financial Signal*) watches macro
+Powerspike (Hack Knight 2026, track: *Prediction Markets as a Financial Signal*) watches macro
 prediction markets (Fed, CPI, tariffs, shutdown, recession) on Polymarket and Kalshi, flags the moments
 the odds reprice, explains the move from news in that window, lists the credit ETFs and companies
 exposed, and measures whether the market **led or lagged** those ETFs. Two halves: `backend/` (~1500
@@ -21,7 +21,7 @@ cp .env.example .env                      # GEMINI_API_KEY, SEC_USER_AGENT, opti
 cd backend
 pytest                                    # all tests (synthetic data only, no network)
 pytest tests/test_detect.py::test_fat_finger_does_not_fire -q   # one test
-uvicorn dislocation_desk.api:app --reload --port 8000           # API; serves frontend/dist at / if built
+uvicorn powerspike.api:app --reload --port 8000           # API; serves frontend/dist at / if built
 
 python scripts/smoke_test_apis.py         # hit each external API once, print shapes
 python scripts/find_markets.py fed        # Polymarket search -> YES token_id
@@ -44,7 +44,7 @@ There is no linter or formatter configured and no CI.
 
 ## Architecture
 
-A five-stage pipeline, each stage a module under `backend/dislocation_desk/`, with the browser owning
+A five-stage pipeline, each stage a module under `backend/powerspike/`, with the browser owning
 only the replay clock:
 
 ```
@@ -247,7 +247,7 @@ markets get Fed headlines unless the user edits it.
 `backend/config/markets.yaml` lists the watched markets; each carries an `event_type` key that indexes
 `backend/config/exposure.yaml` (ETFs, EDGAR query, `direction_note` shown on the card and fed to the
 explainer). Adding a market or an event type is a YAML edit, not a code change.
-`backend/dislocation_desk/config.py` is the only place that reads `.env` or those files. `.env` is
+`backend/powerspike/config.py` is the only place that reads `.env` or those files. `.env` is
 read from the repo root first, then `backend/`. Both YAML loaders are `@lru_cache`'d, so a YAML edit
 needs a process restart to show up. Env vars resolve as `os.getenv(x) or default`, so the empty values
 in a copied `.env.example` fall through to the defaults (`DD_CACHE_PATH` → `backend/data/cache.duckdb`,

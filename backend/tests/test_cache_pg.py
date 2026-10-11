@@ -8,15 +8,15 @@ import os
 import numpy as np
 import pytest
 
-from dislocation_desk.ingest import cache
-from dislocation_desk.synthetic import demo_market
+from powerspike.ingest import cache
+from powerspike.synthetic import demo_market
 
 pytestmark = pytest.mark.skipif(not os.getenv("DD_DATABASE_URL"), reason="DD_DATABASE_URL not set")
 
 
 @pytest.fixture
 def con():
-    from dislocation_desk.ingest import pg
+    from powerspike.ingest import pg
 
     c = pg.connect(os.environ["DD_DATABASE_URL"])
     yield c

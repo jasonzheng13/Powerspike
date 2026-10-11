@@ -12,9 +12,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pandas as pd  # noqa: E402
 
-from dislocation_desk.explain import headlines  # noqa: E402
-from dislocation_desk.expose import edgar_companies  # noqa: E402
-from dislocation_desk.ingest import kalshi, polymarket  # noqa: E402
+from powerspike.explain import headlines  # noqa: E402
+from powerspike.expose import edgar_companies  # noqa: E402
+from powerspike.ingest import kalshi, polymarket  # noqa: E402
 
 
 def check(name, fn):

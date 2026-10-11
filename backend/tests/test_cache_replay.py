@@ -1,7 +1,7 @@
-from dislocation_desk.detect import detect
-from dislocation_desk.ingest import cache
-from dislocation_desk.replay import replay
-from dislocation_desk.synthetic import demo_market
+from powerspike.detect import detect
+from powerspike.ingest import cache
+from powerspike.replay import replay
+from powerspike.synthetic import demo_market
 
 
 def test_cache_roundtrip(tmp_path):
