@@ -15,11 +15,16 @@ CONFIG_DIR = ROOT / "config"
 DATA_DIR = ROOT / "data"
 
 # .env lives at the repo root (shared with the frontend); backend/.env also works.
-load_dotenv(REPO_ROOT / ".env")
-load_dotenv(ROOT / ".env")
+# override=True: an empty shell-level var must not shadow .env
+load_dotenv(REPO_ROOT / ".env", override=True)
+load_dotenv(ROOT / ".env", override=True)
 
 CACHE_PATH = Path(os.getenv("DD_CACHE_PATH") or DATA_DIR / "cache.duckdb")
-CLAUDE_MODEL = os.getenv("CLAUDE_MODEL") or "claude-opus-5-5"
+# Tiger Cloud (Postgres + TimescaleDB) connection string. When set, ingest/cache.py stores bars there
+# instead of the DuckDB file; tests pass an explicit DuckDB path and never see it.
+DATABASE_URL = os.getenv("DD_DATABASE_URL") or ""
+# A free-tier Flash model; the "-latest" alias tracks Google's current version.
+GEMINI_MODEL = os.getenv("GEMINI_MODEL") or "gemini-flash-lite-latest"
 # SEC asks every client to identify itself: "Name email@example.com"
 SEC_USER_AGENT = os.getenv("SEC_USER_AGENT") or ""
 

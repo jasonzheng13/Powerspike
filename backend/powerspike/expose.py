@@ -17,7 +17,7 @@ from collections import Counter
 
 import httpx
 
-from .config import SEC_USER_AGENT, exposure
+from .config import SEC_USER_AGENT, exposure, market
 
 EDGAR_FTS = "https://efts.sec.gov/LATEST/search-index"
 
@@ -26,8 +26,26 @@ def etfs(event_type: str) -> list[str]:
     return exposure().get(event_type, {}).get("etfs", [])
 
 
+def all_etfs() -> list[str]:
+    """Every ETF named in exposure.yaml, deduplicated, in config order (what pull_data.py fetches)."""
+    return list(dict.fromkeys(t for cfg in exposure().values() for t in cfg.get("etfs", [])))
+
+
 def note(event_type: str) -> str:
     return exposure().get(event_type, {}).get("direction_note", "")
+
+
+def expected(event_type: str) -> dict[str, int]:
+    """Sign of each ETF's move when the event's odds rise; a ticker not listed has no view (0)."""
+    return {k: int(v) for k, v in exposure().get(event_type, {}).get("expected", {}).items()}
+
+
+def event_sign(market_id: str) -> int:
+    """+1 if the market's YES price rises with the event's odds, -1 if it falls; +1 for unknown markets."""
+    try:
+        return int(market(market_id).get("event_sign", 1))
+    except KeyError:
+        return 1
 
 
 def edgar_companies(event_type: str, start: str = "2024-01-01", end: str = "2026-12-31", limit: int = 10) -> list[dict]:
@@ -52,4 +70,5 @@ def edgar_companies(event_type: str, start: str = "2024-01-01", end: str = "2026
 
 def exposed(event_type: str) -> dict:
     return {"label": exposure().get(event_type, {}).get("label", event_type),
-            "etfs": etfs(event_type), "companies": edgar_companies(event_type), "note": note(event_type)}
+            "etfs": etfs(event_type), "expected": expected(event_type),
+            "companies": edgar_companies(event_type), "note": note(event_type)}

@@ -1,22 +1,41 @@
 # Known events used to score the detector (the "proof slide").
 # For each: the market, when the news hit (UTC), and whether we expect an alert.
-# Add 5-10 real events plus a few quiet days (expect_alert: false).
-# The harness counts a hit if an alert fires within `tolerance_min` of `time`.
+# The harness counts a hit if an alert's peak lands within `tolerance_min` of `time`.
+#
+# Data: scripts/pull_data.py --start 2026-08-28 --end 2026-09-16 --no-equities
+# Markets are the settled Kalshi contracts in config/markets.yaml (kalshi-fed-sep, kalshi-cpi-aug).
+# All releases below hit at 08:30 ET = 12:30 UTC. The Fed market repriced on each; the CPI market
+# barely moved on jobs or PPI, which makes those two honest quiet controls on a day with real news.
 
 tolerance_min: 60
 
 events:
-  - name: "TODO: FOMC decision day"
-    market: fed-oct-cut
-    time: "2025-12-10T19:00:00Z"
+  - name: "August jobs report moves Sep Fed odds"
+    market: kalshi-fed-sep
+    time: "2026-09-04T12:30:00Z"
     expect_alert: true
 
-  - name: "TODO: CPI release"
-    market: cpi-sep
-    time: "2025-11-13T13:30:00Z"
+  - name: "August PPI moves Sep Fed odds"
+    market: kalshi-fed-sep
+    time: "2026-09-10T12:30:00Z"
     expect_alert: true
 
-  - name: "TODO: quiet day control"
-    market: fed-oct-cut
-    time: "2025-11-20T15:00:00Z"
+  - name: "August CPI moves Sep Fed odds"
+    market: kalshi-fed-sep
+    time: "2026-09-11T12:30:00Z"
+    expect_alert: true
+
+  - name: "quiet control: Fed market, no release (Tue Sep 8 11:00 ET)"
+    market: kalshi-fed-sep
+    time: "2026-09-08T15:00:00Z"
+    expect_alert: false
+
+  - name: "quiet control: CPI market on jobs day (did not reprice)"
+    market: kalshi-cpi-aug
+    time: "2026-09-04T12:30:00Z"
+    expect_alert: false
+
+  - name: "quiet control: CPI market on PPI day (2c move, did not reprice)"
+    market: kalshi-cpi-aug
+    time: "2026-09-10T12:30:00Z"
     expect_alert: false

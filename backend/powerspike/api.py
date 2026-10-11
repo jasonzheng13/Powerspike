@@ -1,4 +1,4 @@
-"""HTTP API for the TypeScript frontend.   cd backend && uvicorn dislocation_desk.api:app --reload
+"""HTTP API for the TypeScript frontend.   cd backend && uvicorn powerspike.api:app --reload
 
 The detector, explainer and exposure lookup run here; the browser only owns the
 replay clock. Every alert carries `confirmed_at`, and the frontend filters on
@@ -22,17 +22,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, expose
+from . import config, expose, leadlag
 from .detect import DetectorParams, Spike, detect
 from .explain import explain, headlines, news_window
 from .ingest import cache
-from .synthetic import demo_market
+from .ingest.equities import equity_id
+from .synthetic import demo_equity, demo_market
 
 SYNTHETIC = {"id": "synthetic-demo", "name": "Fed cuts in December (synthetic demo)",
              "venue": "synthetic", "event_type": "fed_rates"}
 DEFAULT_NEWS_QUERY = '"Federal Reserve" OR Powell'
 
-app = FastAPI(title="Dislocation Desk API", version="0.1.0")
+app = FastAPI(title="Powerspike API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -93,6 +94,24 @@ def _load(market_id: str) -> pd.DataFrame:
     return cache.load(cache.connect(), market_id)
 
 
+@lru_cache(maxsize=64)
+def _load_equity(market_id: str, ticker: str) -> pd.DataFrame:
+    """ETF bars for a market's lead/lag: synthetic ETFs for the synthetic market, the cache otherwise."""
+    if market_id == SYNTHETIC["id"]:
+        return demo_equity(ticker) if ticker in expose.etfs(SYNTHETIC["event_type"]) else pd.DataFrame(columns=["price", "volume"])
+    return cache.load(cache.connect(), equity_id(ticker))
+
+
+@lru_cache(maxsize=256)
+def _leadlag_cached(key: str) -> dict:
+    body = json.loads(key)
+    s = spike_from_json(body["spike"])
+    m = _market(body["market_id"])
+    equities = {t: _load_equity(m["id"], t) for t in expose.etfs(m["event_type"])}
+    ll = leadlag.lead_lag(s, equities, expose.expected(m["event_type"]), expose.event_sign(m["id"]))
+    return leadlag.to_json(ll)
+
+
 @lru_cache(maxsize=256)
 def _explain_cached(key: str) -> tuple[str, list[dict]]:
     body = json.loads(key)
@@ -114,6 +133,17 @@ def _exposed_cached(event_type: str) -> dict:
 @app.get("/api/markets")
 def list_markets() -> dict:
     return {"markets": _markets()}
+
+
+@app.get("/api/store")
+def store() -> dict:
+    """Where the bars live and how fresh each market is. `backend` is 'tiger' (Tiger Cloud hypertable +
+    bars_15min continuous aggregate) or 'duckdb' (local file); `markets` is empty when nothing is cached."""
+    try:
+        rows = cache.stats(cache.connect())
+    except Exception:
+        rows = []
+    return {"backend": cache.backend(), "markets": rows}
 
 
 @app.get("/api/markets/{market_id}/series")
@@ -145,6 +175,34 @@ def market_alerts(
         raise HTTPException(404, f"no data cached for {market_id!r}")
     p = DetectorParams(window=window, score_threshold=score_threshold, hold=hold, vol_min_ratio=vol_min_ratio)
     return {"market_id": market_id, "params": p.__dict__, "alerts": [spike_to_json(s) for s in detect(df, market_id, p)]}
+
+
+@app.get("/api/markets/{market_id}/equities/{ticker}/series")
+def equity_series(market_id: str, ticker: str) -> dict:
+    _market(market_id)
+    ticker = ticker.upper()
+    df = _load_equity(market_id, ticker)
+    if df.empty:
+        raise HTTPException(404, f"no equity bars cached for {ticker!r}; run scripts/pull_data.py")
+    return {
+        "market_id": market_id,
+        "ticker": ticker,
+        "ts": [_iso(t) for t in df.index],
+        "price": [float(p) for p in df["price"]],
+        "volume": [_num(v) for v in df["volume"]],
+    }
+
+
+class LeadLagRequest(BaseModel):
+    market_id: str
+    spike: dict[str, Any]
+
+
+@app.post("/api/leadlag")
+def leadlag_for_spike(req: LeadLagRequest) -> dict:
+    """Did the market lead or lag its exposed ETFs around this spike? Carries its own confirmed_at."""
+    _market(req.market_id)
+    return _leadlag_cached(json.dumps({"market_id": req.market_id, "spike": req.spike}, sort_keys=True, default=str))
 
 
 class ExplainRequest(BaseModel):

@@ -35,3 +35,24 @@ export function fmtClock(iso: string): string {
 export function pct(x: number, digits = 0): string {
   return `${(x * 100).toFixed(digits)}%`;
 }
+
+/** True once the replay clock has reached `confirmedAt` (the same rule as visibleAlerts, for one item). */
+export function revealed(confirmedAt: string, now: string | undefined): boolean {
+  return now !== undefined && Date.parse(confirmedAt) <= Date.parse(now);
+}
+
+/** "+9 min" / "−14 min" / "no move" for a lead/lag reaction, in trading minutes. Positive = the ETF moved after the market. */
+export function fmtLag(lagMin: number | null): string {
+  if (lagMin === null) return "no move";
+  const r = Math.round(lagMin);
+  return r === 0 ? "0 min" : `${r > 0 ? "+" : "−"}${Math.abs(r)} min`;
+}
+
+/** The ETF that reacted most (largest |z|), or `fallback` when nothing reacted. Drives the ETF chart's default. */
+export function bestTicker(reactions: { ticker: string; z: number | null }[] | undefined, fallback: string): string {
+  let best: { ticker: string; z: number } | undefined;
+  for (const r of reactions ?? []) {
+    if (r.z !== null && (!best || Math.abs(r.z) > Math.abs(best.z))) best = { ticker: r.ticker, z: r.z };
+  }
+  return best?.ticker ?? fallback;
+}

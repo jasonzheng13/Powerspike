@@ -2,10 +2,15 @@
 # `etfs` are the quick read; `edgar_query` drives the EDGAR full-text search
 # that finds companies naming this risk in their filings.
 # `direction_note` is shown on the alert card and fed to the explainer.
+# `expected` is the sign of each ETF's move when the *event's* odds rise (+1 up, -1 down,
+# 0 no view), used by leadlag.py to label a reaction "consistent". The event per type:
+#   fed_rates = rate-cut odds, inflation = hotter CPI, tariffs / shutdown / recession = the
+#   thing happening. markets.yaml's `event_sign` says how a market's YES price maps to that.
 
 fed_rates:
   label: "Fed policy / rates"
   etfs: [TLT, IEF, HYG, LQD, KRE, XLF]
+  expected: {TLT: 1, IEF: 1, HYG: 1, LQD: 1, KRE: -1, XLF: -1}
   edgar_query: '"interest rate risk" "Federal Reserve"'
   forms: [10-K, 10-Q]
   direction_note: "Higher cut odds: duration (TLT) up, HY spreads tighter, regional banks' NIM under pressure."
@@ -13,6 +18,7 @@ fed_rates:
 inflation:
   label: "Inflation (CPI)"
   etfs: [TIP, TLT, HYG, XLP, XRT]
+  expected: {TIP: -1, TLT: -1, HYG: -1, XLP: -1, XRT: -1}
   edgar_query: '"inflation" "input costs" "pricing pressure"'
   forms: [10-K]
   direction_note: "Hotter CPI: fewer cuts priced, long bonds down, margin pressure on consumer names."
@@ -20,6 +26,7 @@ inflation:
 tariffs:
   label: "Trade / tariffs"
   etfs: [XLI, XRT, SMH, HYG, EEM]
+  expected: {XLI: -1, XRT: -1, SMH: -1, HYG: -1, EEM: -1}
   edgar_query: '"tariff" "supply chain"'
   forms: [10-K]
   direction_note: "Higher tariff odds: importers and retailers with thin margins most exposed."
@@ -27,6 +34,7 @@ tariffs:
 shutdown:
   label: "Government shutdown"
   etfs: [ITA, XAR, BIL]
+  expected: {ITA: -1, XAR: -1, BIL: 0}
   edgar_query: '"government shutdown" "federal contracts"'
   forms: [10-K]
   direction_note: "Shutdown odds up: federal contractors and T-bill timing risk."
@@ -34,6 +42,7 @@ shutdown:
 recession:
   label: "Recession risk"
   etfs: [HYG, JNK, LQD, XLY, XLF]
+  expected: {HYG: -1, JNK: -1, LQD: -1, XLY: -1, XLF: -1}
   edgar_query: '"economic downturn" "covenant"'
   forms: [10-K]
   direction_note: "Recession odds up: HY spreads wider, cyclicals and levered issuers hit first."

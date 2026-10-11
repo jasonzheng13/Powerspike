@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from dislocation_desk.ingest import kalshi, polymarket  # noqa: E402
+from powerspike.ingest import kalshi, polymarket  # noqa: E402
 
 if len(sys.argv) >= 3 and sys.argv[1] == "--kalshi":
     for m in kalshi.list_markets(sys.argv[2]):

@@ -7,8 +7,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from dislocation_desk.ingest import cache  # noqa: E402
-from dislocation_desk.synthetic import demo_market  # noqa: E402
+from powerspike.ingest import cache  # noqa: E402
+from powerspike.synthetic import demo_market  # noqa: E402
 
 con = cache.connect()
 print("synthetic-demo:", cache.save(con, "synthetic-demo", demo_market()), "bars")

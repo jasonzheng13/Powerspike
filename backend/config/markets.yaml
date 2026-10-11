@@ -1,6 +1,8 @@
-# Markets Dislocation Desk watches.
+# Markets Powerspike watches.
 #
 # event_type links a market to config/exposure.yaml (who's exposed).
+# event_sign: +1 when a rising YES price means the event's odds (as defined in
+# exposure.yaml) are rising, -1 when it means the opposite. Default +1.
 # IDs filled 2026-10-09 with the most-traded live contract per slot.
 #
 # Polymarket: `token_id` is the CLOB token ID for the YES outcome
@@ -10,11 +12,14 @@
 # Find candidates with:  python scripts/find_markets.py fed
 
 markets:
-  - id: fed-oct-cut
-    name: "Fed cuts 25 bps at the October 2026 meeting"
+  # "No change" is the live contract: the cut/hike legs all trade under 1% and never reprice.
+  # YES = Fed holds, so a *falling* price here means rising cut (or hike) odds.
+  - id: fed-oct-hold
+    name: "Fed leaves rates unchanged at the October 2026 meeting"
     venue: polymarket
-    token_id: "33268510350568915228897273528353467773422190590579607471427765079749830445947"
+    token_id: "111061902544814266207267295505639408607400625795891618462682726460921782993748"
     event_type: fed_rates
+    event_sign: -1
 
   - id: kalshi-fed-oct
     name: "Fed upper bound above 4.00% after the October 2026 meeting (Kalshi)"
@@ -22,6 +27,26 @@ markets:
     series_ticker: "KXFED"
     ticker: "KXFED-26OCT-T4.00"
     event_type: fed_rates
+    event_sign: -1
+
+  # Settled contracts kept for validation/known_events.yaml: Kalshi serves candles for settled markets,
+  # and these two were open through the Aug jobs (Sep 4), PPI (Sep 10) and CPI (Sep 11) releases.
+  # Kalshi closes a contract 5 min before the release it settles on, so the release itself is never in the data.
+  - id: kalshi-fed-sep
+    name: "Fed upper bound above 3.75% after the September 2026 meeting (Kalshi, settled)"
+    venue: kalshi
+    series_ticker: "KXFED"
+    ticker: "KXFED-26SEP-T3.75"
+    event_type: fed_rates
+    event_sign: -1
+
+  - id: kalshi-cpi-aug
+    name: "August 2026 CPI rises more than 0.3% (Kalshi, settled)"
+    venue: kalshi
+    series_ticker: "KXCPI"
+    ticker: "KXCPI-26AUG-T0.3"
+    event_type: inflation
+    event_sign: 1
 
   - id: cpi-sep
     name: "September 2026 CPI rises more than 0.5% (Kalshi)"
@@ -29,12 +54,14 @@ markets:
     series_ticker: "KXCPI"
     ticker: "KXCPI-26SEP-T0.5"
     event_type: inflation
+    event_sign: 1
 
   - id: tariffs
     name: "Trump raises tariffs on Canada by October 31"
     venue: polymarket
     token_id: "106274584635199268300198491197529827229467398908367234278985231598662709636224"
     event_type: tariffs
+    event_sign: 1
 
   # shutdown: no clean live market as of 2026-10-09 (only compound "shutdown AND which party ..."
   # contracts with ~$7/day volume). Re-enable when a plain shutdown market lists.
@@ -49,3 +76,4 @@ markets:
     venue: polymarket
     token_id: "100379208559626151022751801118534484742123694725746262280150222742563282755057"
     event_type: recession
+    event_sign: 1

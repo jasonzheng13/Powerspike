@@ -1,6 +1,30 @@
-import type { Alert, AlertsResponse, DetectorInputs, Explanation, Exposure, Market, Series } from "./types";
+import type {
+  Alert,
+  AlertsResponse,
+  DetectorInputs,
+  EquitySeries,
+  Explanation,
+  Exposure,
+  LeadLag,
+  Market,
+  Series,
+  Store,
+} from "./types";
 
 export const DEFAULT_NEWS_QUERY = '"Federal Reserve" OR Powell';
+
+/** News search used for a market's "why" when the user hasn't typed an override. */
+const NEWS_QUERY_BY_EVENT: Record<string, string> = {
+  fed_rates: DEFAULT_NEWS_QUERY,
+  inflation: 'CPI OR inflation OR "consumer prices"',
+  tariffs: "tariffs OR tariff OR Canada trade",
+  recession: 'recession OR "jobs report" OR GDP',
+  shutdown: '"government shutdown" OR "spending bill"',
+};
+
+export function autoNewsQuery(eventType: string | undefined): string {
+  return (eventType && NEWS_QUERY_BY_EVENT[eventType]) || DEFAULT_NEWS_QUERY;
+}
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, init);
@@ -18,6 +42,10 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
 export function fetchMarkets(): Promise<Market[]> {
   return request<{ markets: Market[] }>("/api/markets").then((r) => r.markets);
+}
+
+export function fetchStore(): Promise<Store> {
+  return request<Store>("/api/store");
 }
 
 export function fetchSeries(marketId: string, signal?: AbortSignal): Promise<Series> {
@@ -63,4 +91,22 @@ export function fetchExplanation(marketId: string, alert: Alert, query: string):
 
 export function fetchExposure(eventType: string): Promise<Exposure> {
   return memoised(`exposure:${eventType}`, () => request<Exposure>(`/api/exposure/${encodeURIComponent(eventType)}`));
+}
+
+export function fetchLeadLag(marketId: string, alert: Alert): Promise<LeadLag> {
+  const key = `leadlag:${marketId}:${alert.kind}:${alert.peak}`;
+  return memoised(key, () =>
+    request<LeadLag>("/api/leadlag", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ market_id: marketId, spike: alert }),
+    }),
+  );
+}
+
+export function fetchEquitySeries(marketId: string, ticker: string, signal?: AbortSignal): Promise<EquitySeries> {
+  return request<EquitySeries>(
+    `/api/markets/${encodeURIComponent(marketId)}/equities/${encodeURIComponent(ticker)}/series`,
+    { signal },
+  );
 }

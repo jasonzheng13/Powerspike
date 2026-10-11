@@ -19,7 +19,7 @@ from . import kalshi, polymarket
 def fetch(market: dict, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
     """Fetch one configured market (an entry from config/markets.yaml)."""
     if market["venue"] == "polymarket":
-        return polymarket.price_history(market["token_id"], start, end)
+        return polymarket.history(market["token_id"], start, end)
     if market["venue"] == "kalshi":
         return kalshi.candlesticks(market["series_ticker"], market["ticker"], start, end)
     raise ValueError(f"unknown venue {market['venue']!r}")

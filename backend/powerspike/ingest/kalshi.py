@@ -35,6 +35,26 @@ def _close(side: dict | None) -> float | None:
     return None
 
 
+def parse_candles(candles: list[dict]) -> list[dict]:
+    """Candle JSON -> rows of ts / price / volume.
+
+    Price is the last trade when the candle had one, else the bid/ask midpoint. A one-sided or
+    empty book (bid 0 or ask 1, which is what Kalshi reports once a market has closed) has no
+    midpoint worth the name, so those candles are dropped rather than written as 50%.
+    """
+    rows = []
+    for c in candles:
+        close = _close(c.get("price"))
+        if close is None:
+            bid, ask = _close(c.get("yes_bid")), _close(c.get("yes_ask"))
+            if bid is None or ask is None or bid <= 0 or ask >= 1:
+                continue
+            close = (bid + ask) / 2
+        volume = float(c.get("volume_fp", c.get("volume")) or 0)
+        rows.append({"ts": pd.to_datetime(c["end_period_ts"], unit="s", utc=True), "price": close, "volume": volume})
+    return rows
+
+
 def candlesticks(series_ticker: str, ticker: str, start: pd.Timestamp, end: pd.Timestamp, period: int = 1) -> pd.DataFrame:
     rows = []
     step = pd.Timedelta(minutes=period * MAX_CANDLES)
@@ -44,16 +64,7 @@ def candlesticks(series_ticker: str, ticker: str, start: pd.Timestamp, end: pd.T
         params = {"start_ts": int(t0.timestamp()), "end_ts": int(t1.timestamp()), "period_interval": period}
         r = httpx.get(f"{BASE}/series/{series_ticker}/markets/{ticker}/candlesticks", params=params, timeout=30)
         r.raise_for_status()
-        for c in r.json().get("candlesticks", []):
-            # Last trade close when there was a trade; otherwise fall back to the bid/ask midpoint.
-            close = _close(c.get("price"))
-            if close is None:
-                bid, ask = _close(c.get("yes_bid")), _close(c.get("yes_ask"))
-                close = (bid + ask) / 2 if bid is not None and ask is not None else None
-            if close is None:
-                continue
-            volume = float(c.get("volume_fp", c.get("volume")) or 0)
-            rows.append({"ts": pd.to_datetime(c["end_period_ts"], unit="s", utc=True), "price": close, "volume": volume})
+        rows.extend(parse_candles(r.json().get("candlesticks", [])))
         t0 = t1
     if not rows:
         return pd.DataFrame(columns=["price", "volume"])

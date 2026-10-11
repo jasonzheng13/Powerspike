@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { Alert } from "../types";
-import { clamp, fmtClock, fmtHM, pct, visibleAlerts } from "./replay";
+import { bestTicker, clamp, fmtClock, fmtHM, fmtLag, pct, revealed, visibleAlerts } from "./replay";
 
 const alert = (confirmed_at: string, kind: Alert["kind"] = "jump"): Alert => ({
   market_id: "m",
@@ -43,5 +43,32 @@ describe("formatting", () => {
     expect(pct(0.614, 1)).toBe("61.4%");
     expect(clamp(5, 0, 3)).toBe(3);
     expect(clamp(-1, 0, 3)).toBe(0);
+  });
+});
+
+describe("revealed", () => {
+  it("is true once the clock reaches confirmed_at, false before and without a clock", () => {
+    expect(revealed("2025-12-10T15:00:00+00:00", "2025-12-10T15:00:00+00:00")).toBe(true);
+    expect(revealed("2025-12-10T15:00:00+00:00", "2025-12-10T15:01:00+00:00")).toBe(true);
+    expect(revealed("2025-12-10T15:00:00+00:00", "2025-12-10T14:59:00+00:00")).toBe(false);
+    expect(revealed("2025-12-10T15:00:00+00:00", undefined)).toBe(false);
+  });
+});
+
+describe("fmtLag", () => {
+  it("formats a lag in minutes with its sign, and 'no move' for null", () => {
+    expect(fmtLag(9)).toBe("+9 min");
+    expect(fmtLag(-14.4)).toBe("−14 min");
+    expect(fmtLag(0)).toBe("0 min");
+    expect(fmtLag(null)).toBe("no move");
+  });
+});
+
+describe("bestTicker", () => {
+  const r = (ticker: string, z: number | null) => ({ ticker, z });
+  it("picks the reaction with the largest |z|, falling back when none reacted", () => {
+    expect(bestTicker([r("TLT", 3.9), r("KRE", -9.6), r("XLF", null)], "TLT")).toBe("KRE");
+    expect(bestTicker([r("TLT", null)], "IEF")).toBe("IEF");
+    expect(bestTicker(undefined, "IEF")).toBe("IEF");
   });
 });

@@ -56,9 +56,53 @@ def add_drift(df: pd.DataFrame, at: int, size: float, over: int = 240) -> pd.Dat
 
 
 def demo_market(seed: int = 7) -> pd.DataFrame:
-    """One trading day with a fat-finger, a real jump and a slow drift."""
-    df = quiet_market(n=1440, p0=0.38, noise=0.006, seed=seed)
+    """One trading day with a fat-finger, a real jump and a slow drift.
+
+    Starts at 03:00 UTC so the jump (score peak 14:54 UTC = 09:54 EST) lands
+    inside the NYSE session and the synthetic ETFs in `demo_equity` can react to it; the drift
+    still fires after the close and shows the after-hours path.
+    """
+    df = quiet_market(n=1440, p0=0.38, noise=0.006, seed=seed, start="2025-12-10 03:00")
     df = add_fat_finger(df, at=420, size=1.2)
     df = add_jump(df, at=700, size=0.95, over=12)   # ~38% -> ~61%
     df = add_drift(df, at=1000, size=-0.8, over=300)
     return df
+
+
+# ---- synthetic ETFs for the lead/lag demo ---------------------------------------------
+
+def equity_sessions(days: list[str], p0: float = 100.0, noise: float = 0.0003, seed: int = 0) -> pd.DataFrame:
+    """A log-price random walk over the given NYSE sessions (09:30-16:00 ET), 1-minute bars, session-only."""
+    rng = np.random.default_rng(seed)
+    idx = pd.DatetimeIndex([])
+    for d in days:
+        idx = idx.append(pd.date_range(f"{d} 09:30", f"{d} 15:59", freq="1min", tz="America/New_York"))
+    idx = idx.tz_convert("UTC")
+    lg = np.log(p0) + np.cumsum(rng.normal(0, noise, len(idx)))
+    vol = rng.gamma(shape=2.0, scale=5000.0, size=len(idx))
+    return pd.DataFrame({"price": np.round(np.exp(lg), 2), "volume": vol}, index=idx)
+
+
+def add_equity_move(df: pd.DataFrame, at: pd.Timestamp, size: float, over: int = 3) -> pd.DataFrame:
+    """Shift log price by `size` over `over` bars starting at the first bar >= `at`, and keep it."""
+    out = df.copy()
+    pos = int(out.index.searchsorted(pd.Timestamp(at)))
+    lg = np.log(out["price"].to_numpy(copy=True))
+    ramp = np.clip((np.arange(len(lg)) - pos) / over, 0, 1) * size
+    out["price"] = np.round(np.exp(lg + ramp), 2)
+    return out
+
+
+# Minutes after the demo jump *onset* (bar 700 = 14:40 UTC) at which each fed_rates ETF starts moving,
+# and by how much (log return). XLF stays flat on purpose.
+DEMO_REACTIONS = {"TLT": (8, 0.010), "IEF": (10, 0.004), "HYG": (15, 0.006), "LQD": (20, 0.007),
+                  "KRE": (6, -0.012), "XLF": (None, 0.0)}
+
+
+def demo_equity(ticker: str, seed: int = 11) -> pd.DataFrame:
+    """A synthetic ETF for the `synthetic-demo` market: two sessions, reacting after the 14:40 UTC jump onset."""
+    df = equity_sessions(["2025-12-09", "2025-12-10"], seed=seed + sum(map(ord, ticker.upper())))
+    lag, size = DEMO_REACTIONS.get(ticker.upper(), (None, 0.0))
+    if lag is None:
+        return df
+    return add_equity_move(df, at=pd.Timestamp("2025-12-10 14:40", tz="UTC") + pd.Timedelta(minutes=lag), size=size)
