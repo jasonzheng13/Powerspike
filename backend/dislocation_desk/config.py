@@ -20,6 +20,9 @@ load_dotenv(REPO_ROOT / ".env", override=True)
 load_dotenv(ROOT / ".env", override=True)
 
 CACHE_PATH = Path(os.getenv("DD_CACHE_PATH") or DATA_DIR / "cache.duckdb")
+# Tiger Cloud (Postgres + TimescaleDB) connection string. When set, ingest/cache.py stores bars there
+# instead of the DuckDB file; tests pass an explicit DuckDB path and never see it.
+DATABASE_URL = os.getenv("DD_DATABASE_URL") or ""
 # A free-tier Flash model; the "-latest" alias tracks Google's current version.
 GEMINI_MODEL = os.getenv("GEMINI_MODEL") or "gemini-flash-lite-latest"
 # SEC asks every client to identify itself: "Name email@example.com"

@@ -223,3 +223,6 @@ button, input, select {
 .replay-bar { display: flex; align-items: center; gap: 8px; }
 .replay-bar .speed-pills { gap: 4px; }
 .replay-bar .pill { flex: none; padding: 5px 11px; }
+
+.status-line.store { gap: 8px; font-size: 12px; color: var(--ink-2); }
+.status-line.store .venue { font-weight: 600; }

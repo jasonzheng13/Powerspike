@@ -135,6 +135,17 @@ def list_markets() -> dict:
     return {"markets": _markets()}
 
 
+@app.get("/api/store")
+def store() -> dict:
+    """Where the bars live and how fresh each market is. `backend` is 'tiger' (Tiger Cloud hypertable +
+    bars_15min continuous aggregate) or 'duckdb' (local file); `markets` is empty when nothing is cached."""
+    try:
+        rows = cache.stats(cache.connect())
+    except Exception:
+        rows = []
+    return {"backend": cache.backend(), "markets": rows}
+
+
 @app.get("/api/markets/{market_id}/series")
 def market_series(market_id: str) -> dict:
     _market(market_id)

@@ -7,6 +7,12 @@ export interface Market {
   event_type: string;
 }
 
+/** GET /api/store: which backend holds the bars and per-market freshness. */
+export interface Store {
+  backend: "tiger" | "duckdb";
+  markets: { market_id: string; last_bar: string; bars: number; volume_24h: number | null }[];
+}
+
 export interface Series {
   market_id: string;
   /** ISO-8601 UTC timestamps on a 1-minute grid. */

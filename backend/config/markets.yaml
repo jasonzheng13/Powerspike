@@ -29,6 +29,25 @@ markets:
     event_type: fed_rates
     event_sign: -1
 
+  # Settled contracts kept for validation/known_events.yaml: Kalshi serves candles for settled markets,
+  # and these two were open through the Aug jobs (Sep 4), PPI (Sep 10) and CPI (Sep 11) releases.
+  # Kalshi closes a contract 5 min before the release it settles on, so the release itself is never in the data.
+  - id: kalshi-fed-sep
+    name: "Fed upper bound above 3.75% after the September 2026 meeting (Kalshi, settled)"
+    venue: kalshi
+    series_ticker: "KXFED"
+    ticker: "KXFED-26SEP-T3.75"
+    event_type: fed_rates
+    event_sign: -1
+
+  - id: kalshi-cpi-aug
+    name: "August 2026 CPI rises more than 0.3% (Kalshi, settled)"
+    venue: kalshi
+    series_ticker: "KXCPI"
+    ticker: "KXCPI-26AUG-T0.3"
+    event_type: inflation
+    event_sign: 1
+
   - id: cpi-sep
     name: "September 2026 CPI rises more than 0.5% (Kalshi)"
     venue: kalshi

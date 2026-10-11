@@ -31,7 +31,8 @@ class DetectorParams:
     baseline: int = 240         # bars of history for the rolling median / MAD (4 h)
     min_scale: float = 0.05     # floor on the robust scale of window changes, in logit units; stops flat markets from producing huge z
     vol_min_ratio: float = 2.0  # window volume must be >= this many times its usual level for full credit
-    min_volume: float = 100.0   # floor on a window's usual volume, in shares/contracts; stops thin markets from crediting any single trade
+    min_notional: float = 100.0 # floor on a window's usual volume, in dollars at risk (shares x min(p, 1-p)); stops thin markets from crediting a $5 trade
+    tail: float = 0.05          # a move whose both ends lie under `tail` or over 1-`tail` is tick noise, not a repricing, and is not scored
     hold: int = 30              # bars after the move at which we check it stuck
     score_threshold: float = 4.0
     cooldown: int = 60          # bars after an alert during which the same market can't fire again
@@ -114,11 +115,13 @@ def score_series(df: pd.DataFrame, params: DetectorParams | None = None) -> pd.D
     # so the baseline never overlaps the move being scored.
     out["z"] = robust_z(out["delta"], p.baseline, p.min_scale, lag=p.window)
 
-    # Real money? Window volume vs. its usual level (median of past windows).
+    # Real money? Window volume vs. its usual level (median of past windows). The floor on "usual"
+    # is a dollar amount converted to shares at the current price, so 500 contracts at 1c ($5) earn
+    # nothing while the ratio itself stays in shares and is not distorted by the price move.
     if "volume" in out and out["volume"].notna().any():
         vol_win = out["volume"].fillna(0).rolling(p.window).sum()
         usual = vol_win.shift(p.window).rolling(p.baseline, min_periods=p.baseline // 2).median()
-        out["volume_ratio"] = vol_win / usual.clip(lower=p.min_volume)
+        out["volume_ratio"] = vol_win / usual.clip(lower=floor_shares(out["price"], p.min_notional))
         # No excess volume (ratio <= 1) earns nothing; vol_min_ratio or more earns full credit.
         out["vol_conf"] = ((out["volume_ratio"] - 1) / (p.vol_min_ratio - 1)).clip(0, 1)
     else:
@@ -134,7 +137,20 @@ def score_series(df: pd.DataFrame, params: DetectorParams | None = None) -> pd.D
         out["persistence"] = (later_move / out["delta"]).clip(0, 1).fillna(0)
 
     out["score"] = out["z"].abs() * out["vol_conf"] * out["persistence"]
+    # Tick noise? One cent at 1% is ~0.7 logit, so a contract pinned in a tail would fire on every
+    # tick. A move is scored only if at least one end sits inside [tail, 1-tail].
+    tail_now = in_tail(out["price"], p.tail)
+    out.loc[tail_now & in_tail(out["price"].shift(p.window), p.tail), "score"] = 0.0
     return out
+
+
+def floor_shares(price: pd.Series, dollars: float) -> pd.Series:
+    """How many shares `dollars` at risk buys at this price: the smaller side (min(p, 1-p)) puts up the stake."""
+    return dollars / np.minimum(price, 1 - price)
+
+
+def in_tail(price: pd.Series, tail: float) -> pd.Series:
+    return (price < tail) | (price > 1 - tail)
 
 
 def detect_jumps(df: pd.DataFrame, market_id: str = "", params: DetectorParams | None = None) -> list[Spike]:
@@ -180,7 +196,7 @@ def detect_drifts(df: pd.DataFrame, market_id: str = "", params: DetectorParams 
     rolling median would quietly absorb the very trend we want to catch.
 
     Real money? A grind trades at a normal pace rather than in a burst, so unlike a jump
-    it needs only its usual volume (floored at `min_volume` per `window`) for full credit.
+    it needs only its usual volume (floored at `min_notional` dollars at risk per `window`) for full credit.
     The alarm fires when CUSUM level × that credit reaches `cusum_h`, so a grind on an
     empty book never fires and a thinly traded one fires later.
     """
@@ -190,12 +206,14 @@ def detect_drifts(df: pd.DataFrame, market_id: str = "", params: DetectorParams 
     d = lg.diff()
     hist = d.shift(1)
     scale = (MAD_TO_SIGMA * _rolling_mad(hist, p.drift_baseline)).clip(lower=p.min_scale)
-    x = (d / scale).where(scale.notna() & hist.rolling(p.drift_baseline, min_periods=16).count().ge(16), 0).fillna(0).values
+    x = (d / scale).where(scale.notna() & hist.rolling(p.drift_baseline, min_periods=16).count().ge(16), 0)
+    # Same tail rule as the jumps: a change between two tail prices is a tick, not a step.
+    x = x.where(~(in_tail(bars, p.tail) & in_tail(bars.shift(1), p.tail)), 0).fillna(0).values
 
     has_volume = "volume" in df and df["volume"].notna().any()
     if has_volume:
         vol = df["volume"].fillna(0).resample(f"{p.drift_bar}min").sum().reindex(bars.index, fill_value=0)
-        floor = p.min_volume * p.drift_bar / p.window
+        floor = floor_shares(bars, p.min_notional * p.drift_bar / p.window)
         usual = vol.shift(1).rolling(p.drift_baseline, min_periods=16).median().clip(lower=floor).fillna(floor)
         vol, usual = vol.values, usual.values
 

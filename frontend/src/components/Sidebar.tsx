@@ -1,6 +1,6 @@
 import { fmtClock } from "../lib/replay";
 import type { Summary } from "../lib/summaries";
-import type { DetectorInputs, Market } from "../types";
+import type { DetectorInputs, Market, Store } from "../types";
 
 const VENUE_LABEL: Record<Market["venue"], string> = {
   polymarket: "Polymarket",
@@ -19,6 +19,7 @@ interface Props {
   autoQuery: string;
   onNewsQuery: (q: string) => void;
   summaries: Record<string, Summary>;
+  store: Store | null;
 }
 
 interface SliderProps {
@@ -57,6 +58,15 @@ function Slider({
   );
 }
 
+function fmtBars(s: Store): string {
+  const n = s.markets.reduce((a, m) => a + m.bars, 0);
+  return n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n);
+}
+
+function storeTitle(s: Store): string {
+  return s.markets.map((m) => `${m.market_id}: ${m.bars} bars, last ${fmtClock(m.last_bar)} UTC`).join("\n");
+}
+
 export default function Sidebar(p: Props) {
   const set = (patch: Partial<DetectorInputs>) =>
     p.onParams({ ...p.params, ...patch });
@@ -81,6 +91,14 @@ export default function Sidebar(p: Props) {
         <span className={`dot${hasReal ? " live" : ""}`} />
         {hasReal ? `Market data through ${lastTs ? fmtClock(lastTs) : "…"} UTC` : "Demo data (synthetic)"}
       </div>
+      {p.store && (
+        <div className="status-line store" title={storeTitle(p.store)}>
+          <span className="venue">{p.store.backend === "tiger" ? "Tiger Cloud" : "DuckDB"}</span>
+          {p.store.backend === "tiger"
+            ? `hypertable · 15-min continuous aggregate · ${fmtBars(p.store)} bars`
+            : `local file · ${fmtBars(p.store)} bars`}
+        </div>
+      )}
 
       <div className="stats">
         <div className="stat">

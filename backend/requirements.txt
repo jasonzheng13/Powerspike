@@ -11,3 +11,4 @@ uvicorn[standard]>=0.30
 google-genai>=1.0
 yfinance>=0.2.40
 pytest>=8.0
+psycopg[binary]>=3.1

@@ -17,7 +17,7 @@ TypeScript + Vite, Plotly for the charts). `README.md` holds the pitch and the d
 # backend — run from backend/ (the .venv lives at the repo root)
 python -m venv .venv && source .venv/bin/activate
 pip install -r backend/requirements.txt
-cp .env.example .env                      # GEMINI_API_KEY, SEC_USER_AGENT, optional GEMINI_MODEL / DD_CACHE_PATH
+cp .env.example .env                      # GEMINI_API_KEY, SEC_USER_AGENT, optional GEMINI_MODEL / DD_CACHE_PATH / DD_DATABASE_URL
 cd backend
 pytest                                    # all tests (synthetic data only, no network)
 pytest tests/test_detect.py::test_fat_finger_does_not_fire -q   # one test
@@ -28,6 +28,7 @@ python scripts/find_markets.py fed        # Polymarket search -> YES token_id
 python scripts/find_markets.py --kalshi KXFED
 python scripts/pull_data.py --start 2025-12-09 --end 2025-12-11   # or --days 7; also pulls the ETFs (--no-equities / --equities-only)
 python scripts/run_leadlag.py             # lead/lag of every cached spike vs its ETFs, plus the summary (proof slide)
+python scripts/migrate_cache.py           # copy the local DuckDB cache into Tiger Cloud (needs DD_DATABASE_URL)
 python scripts/seed_demo_data.py          # synthetic market into the cache (replay/validate only; the API builds demo_market() itself and ignores this row)
 python scripts/run_validation.py          # hit rate / false-alarm rate on known_events.yaml
 
@@ -71,8 +72,17 @@ Two contracts hold the pipeline together, and most changes should preserve them:
    the NaN prices). Volume is shares traded on *both* outcomes, the same unit as Kalshi contracts. The
    trades feed is paged backwards by `end` because offsets past ~10k return nothing, and 429s are retried.
    `ingest/cache.py` persists the grid as `bars(market_id, ts, price, volume)` with
-   `PRIMARY KEY (market_id, ts)` and `INSERT OR REPLACE`, so re-pulling an overlapping window overwrites
+   `PRIMARY KEY (market_id, ts)` and an upsert, so re-pulling an overlapping window overwrites
    rather than duplicates; `market_id` is the `id` from `markets.yaml` (there is no venue column).
+   **Two storage backends behind one seam:** `cache.connect()` with no argument returns a Tiger Cloud
+   (Postgres + TimescaleDB) connection when `DD_DATABASE_URL` is set, else the local DuckDB file; every
+   other `cache.*` function dispatches on the connection type. The Tiger side (`ingest/pg.py`) keeps
+   `bars` as a hypertable on `ts` plus a real-time **continuous aggregate** `bars_15min` (left-edge
+   `time_bucket`, `last(price)`, summed volume) that `cache.load_15min()` reads; on DuckDB the same call
+   is a pandas resample. One connection per process (the dev tier has no pooler), reopened if it drops.
+   Tests always pass an explicit DuckDB path, so they never see `DD_DATABASE_URL`; `tests/test_cache_pg.py`
+   runs only when it is set and writes under the `_test:` prefix. `scripts/migrate_cache.py` copies the
+   local file into Tiger. `GET /api/store` reports the backend and per-market freshness for the sidebar.
    Nothing downstream of `to_grid` knows which venue the data came from — though Kalshi stamps candles at
    their period *end* (`end_period_ts`) while Polymarket's `t` is used as-is, so the two venues may sit
    one bar apart. Unlike explain/expose, ingest raises on HTTP errors; `pull_data.py` catches per market
@@ -115,8 +125,13 @@ knowing before editing it:
 - Drifts check volume differently from jumps. A jump needs a *surge* (`vol_min_ratio`× usual for full
   credit); a drift needs only its *usual* volume over its span (ratio ≥ 1 → full credit), because a grind
   trades at a normal pace — `add_drift` in `synthetic.py` keeps volume normal on purpose. Both floor
-  "usual" at `min_volume` per `window`. A drift fires when CUSUM level × credit ≥ `cusum_h`, so an
-  under-traded grind fires later rather than never, and a volume-free series keeps credit 1.
+  "usual" at `min_notional` *dollars at risk* per `window`, converted to shares at the current price
+  (`floor_shares`: $100 / min(p, 1−p)), so the ratio stays in shares and is not distorted by the move
+  itself, while 500 contracts at 1¢ earn nothing. A drift fires when CUSUM level × credit ≥ `cusum_h`,
+  so an under-traded grind fires later rather than never, and a volume-free series keeps credit 1.
+- **Tail gate.** A move whose *both* ends lie under `tail` (0.05) or over `1 − tail` scores 0 (jumps)
+  or contributes 0 to the CUSUM (drifts): one tick at 1% is ~0.7 logit, and a settled 0–2% contract
+  produced 103 alerts in 20 days before this. A move with one end inside the range (3% → 19%) still fires.
 - **Dead zones at both ends of a series.** The lagged median/MAD needs `baseline/2` (= 120) bars, so the
   first ~135 bars can never fire — which is why the frontend's "Play from start" rewinds to
   `params.baseline` (240, taken from the alerts response), not 0. Persistence is measured at exactly one
@@ -186,6 +201,7 @@ never involved. For one `Spike` and one ETF (session bars only):
 
 `api.py` is a thin FastAPI layer; it owns no logic beyond JSON shaping and caching. Routes:
 `GET /api/markets` (cached markets from `markets.yaml` plus the synthetic demo, always last),
+`GET /api/store` (which backend holds the bars, per-market last bar / bar count / 24 h volume),
 `GET /api/markets/{id}/series`, `GET /api/markets/{id}/alerts?window&score_threshold&hold&vol_min_ratio`,
 `POST /api/explain {market_id, spike, query}`, `GET /api/exposure/{event_type}` (now includes
 `expected`), `GET /api/markets/{id}/equities/{ticker}/series` (market-scoped so `synthetic-demo` serves
@@ -235,7 +251,7 @@ explainer). Adding a market or an event type is a YAML edit, not a code change.
 read from the repo root first, then `backend/`. Both YAML loaders are `@lru_cache`'d, so a YAML edit
 needs a process restart to show up. Env vars resolve as `os.getenv(x) or default`, so the empty values
 in a copied `.env.example` fall through to the defaults (`DD_CACHE_PATH` → `backend/data/cache.duckdb`,
-`GEMINI_MODEL` → `gemini-flash-lite-latest`). Polymarket entries need `token_id` — the YES outcome's **CLOB
+`GEMINI_MODEL` → `gemini-flash-lite-latest`, `DD_DATABASE_URL` → empty, meaning DuckDB). Polymarket entries need `token_id` — the YES outcome's **CLOB
 token** (Gamma `clobTokenIds[0]`), not the market id or slug; Kalshi entries need both `series_ticker`
 and `ticker` because the candlesticks URL uses both.
 
@@ -259,11 +275,25 @@ yfinance only serves 1-minute bars for the last ~30 days, so the ETF side of an 
 cannot be re-pulled). On that week all three real spikes fired outside NYSE hours, so their lead/lag is
 measured from the next open: two read `market led (overnight)`, one has too few reacting ETFs.
 
+Validated on real events as of 2026-10-10: `validation/known_events.yaml` scores the settled Kalshi
+contracts `kalshi-fed-sep` (KXFED-26SEP-T3.75) and `kalshi-cpi-aug` on the Aug jobs / PPI / CPI releases
+(all 08:30 ET) plus three quiet controls: 6/6, hit rate 1.0, false-alarm rate 0.0 (`run_validation.py`;
+data via `pull_data.py --start 2026-08-28 --end 2026-09-16 --no-equities`; Polymarket rejects a window
+that long at 1-min fidelity, Kalshi does not). Kalshi closes a contract 5 min before the release it settles
+on, so validate on the releases *before* close, and the candle after close reports bid 0 / ask 1, which
+`kalshi.parse_candles` now drops instead of writing 50%. On the cached live week the only surviving alert
+is the Oct 7 CPI block (40k contracts); the two Kalshi Fed alerts it used to show were one-lot trades
+bouncing across a 5¢ spread. The Kalshi price is the last trade when the candle has one, else the
+midpoint, and ~90% of its 1-min price changes are midpoint moves with no trade.
+
 Not yet live-verified: `explain.headlines` returned no articles in a manual probe (GDELT rate limit or
-query shape, unclear), `expose.edgar_companies` has returned `[]` so far, `validation/known_events.yaml`
-holds TODO events. Polymarket volume (`trades_volume`) is live-tested as of 2026-10-09. Trading is
-bursty: on every live market the *median* 15-minute window has zero volume, so `DetectorParams.min_volume`
-(100 shares/contracts) floors the "usual" level; without it any single trade earned full `vol_conf`.
-On a thin market like `tariffs` (391 shares in a week) neither jumps nor drifts fire any more.
+query shape, unclear), `expose.edgar_companies` has returned `[]` so far. Polymarket volume
+(`trades_volume`) is live-tested as of 2026-10-09. Trading is bursty: on every live market the *median*
+15-minute window has zero volume, so `DetectorParams.min_notional` floors the "usual" level; without it
+any single trade earned full `vol_conf`. `min_scale` (0.05 logit) is the binding scale on 95%+ of bars
+on the live markets, so there the "robust z" is effectively a fixed 0.2-logit threshold; on the liquid
+settled Fed contract it binds far less. On a thin market like `tariffs` (391 shares in a week) neither
+jumps nor drifts fire. Three of the five live markets (`fed-oct-hold`, `recession`, `tariffs`) changed
+price 28, 7 and ~1900 times in the week with almost no trades, so nothing can fire on them.
 Known cosmetic issue: `Spike.headline()` formats
 prices with `.0%`, so a sub-1% market reads "1% → 0%".

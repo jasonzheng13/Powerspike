@@ -61,7 +61,7 @@ Kalshi ─────┘                                  ▲        └─► 
 
 | # | Component | File | Status |
 |---|---|---|---|
-| 1 | **Ingest**: price + volume into a local cache | `dislocation_desk/ingest/` | Live-tested on both venues; Polymarket volume comes from the Data API trades feed |
+| 1 | **Ingest**: price + volume into the bar cache | `dislocation_desk/ingest/` | Live-tested on both venues; Polymarket volume comes from the Data API trades feed. Bars live in **Tiger Cloud** (TimescaleDB hypertable + 15-min continuous aggregate) when `DD_DATABASE_URL` is set, else a local DuckDB file |
 | 2 | **Detect**: jump + drift alerts | `dislocation_desk/detect.py` | **Working, tested** |
 | 3 | **Explain**: headlines in the window, Gemini writes the "why" | `dislocation_desk/explain.py` | Written; falls back to a template without a key |
 | 4 | **Expose**: event to ETFs + companies naming the risk in filings | `dislocation_desk/expose.py`, `config/exposure.yaml` | ETF map done; EDGAR search written, not live-tested |
@@ -77,7 +77,8 @@ Runs on a 1-minute grid per market.
 | Test | How | Why |
 |---|---|---|
 | **Big?** | Price to log-odds, `logit(p) = ln(p/(1-p))`, smoothed with a 5-bar rolling median. Change over a 15-min window, scored as a **robust z**: `(Δ − rolling median) / (1.4826 × rolling MAD)` over the past 4 h | Log-odds makes 2%→6% count as much as it should. Median/MAD aren't distorted by earlier spikes. The smoothing means a 1-2 bar stray print can't be either end of a move |
-| **Real money?** | Window volume ÷ its usual level, with "usual" floored at 100 shares/contracts. No excess volume earns 0, 2× or more earns full credit | Filters a single small trade moving a thin book; the floor stops a market that usually trades nothing from crediting any one trade |
+| **Real money?** | Window volume ÷ its usual level, with "usual" floored at $100 at risk (converted to shares at the current price). No excess volume earns 0, 2× or more earns full credit | Filters a single small trade moving a thin book; a dollar floor stops 500 contracts at 1¢ ($5) or a few one-lot trades across a 5¢ spread from counting as real money |
+| **Not a tick?** | A move whose both ends sit under 5% or over 95% is not scored | One cent at 1% is 0.7 in log-odds; a contract pinned in a tail would otherwise fire on every tick (103 alerts in 20 days on a settled 0–2% Fed contract) |
 | **Sticks?** | Share of the move still in place 30 min later (0 to 1) | Filters fat-finger prints that revert |
 
 `score = |robust z| × volume confirmation × persistence`; alert when `score ≥ 4`, with a 60-min cooldown.
@@ -106,7 +107,7 @@ backend/
   dislocation_desk/
     api.py                    FastAPI app the frontend talks to (also serves frontend/dist)
     detect.py                 spike detector (jump + drift)
-    ingest/                   polymarket.py, kalshi.py, equities.py (yfinance, NYSE sessions), cache.py (DuckDB)
+    ingest/                   polymarket.py, kalshi.py, equities.py (yfinance, NYSE sessions), cache.py (DuckDB or Tiger), pg.py (Tiger Cloud)
     explain.py                GDELT headlines + Gemini "why"
     expose.py                 ETF map + EDGAR full-text search
     leadlag.py                did the market lead or lag its ETFs? (own confirmed_at)

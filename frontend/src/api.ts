@@ -8,6 +8,7 @@ import type {
   LeadLag,
   Market,
   Series,
+  Store,
 } from "./types";
 
 export const DEFAULT_NEWS_QUERY = '"Federal Reserve" OR Powell';
@@ -41,6 +42,10 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
 export function fetchMarkets(): Promise<Market[]> {
   return request<{ markets: Market[] }>("/api/markets").then((r) => r.markets);
+}
+
+export function fetchStore(): Promise<Store> {
+  return request<Store>("/api/store");
 }
 
 export function fetchSeries(marketId: string, signal?: AbortSignal): Promise<Series> {

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
-import { autoNewsQuery, fetchAlerts, fetchEquitySeries, fetchExposure, fetchLeadLag, fetchMarkets, fetchSeries } from "./api";
+import { autoNewsQuery, fetchAlerts, fetchEquitySeries, fetchExposure, fetchLeadLag, fetchMarkets, fetchSeries, fetchStore } from "./api";
 import AlertCard from "./components/AlertCard";
 import EquityChart from "./components/EquityChart";
 import MarketChart from "./components/MarketChart";
@@ -9,7 +9,7 @@ import Sidebar from "./components/Sidebar";
 import { alertKey, bestTicker, clamp, fmtClock, revealed, visibleAlerts } from "./lib/replay";
 import { useMarketSummaries } from "./lib/summaries";
 import { applyTheme, initialTheme, type Theme } from "./lib/theme";
-import type { Alert, AlertsResponse, DetectorInputs, EquitySeries, LeadLag, Market, Series } from "./types";
+import type { Alert, AlertsResponse, DetectorInputs, EquitySeries, LeadLag, Market, Series, Store } from "./types";
 
 const DEFAULT_PARAMS: DetectorInputs = {
   window: 15,
@@ -56,6 +56,7 @@ export default function App() {
   const [speed, setSpeed] = useState(1);
 
   const summaries = useMarketSummaries(markets, params);
+  const [store, setStore] = useState<Store | null>(null);
 
   const [series, setSeries] = useState<Series | null>(null);
   const [alertsResp, setAlertsResp] = useState<AlertsResponse | null>(null);
@@ -88,6 +89,11 @@ export default function App() {
         );
       })
       .catch((e: Error) => setError(e.message));
+  }, []);
+
+  // Where the bars live (Tiger Cloud or the local DuckDB file); shown in the sidebar status line.
+  useEffect(() => {
+    fetchStore().then(setStore).catch(() => setStore(null));
   }, []);
 
   // Series on market change; the clock rewinds to the end (everything visible).
@@ -259,6 +265,7 @@ export default function App() {
         autoQuery={autoQuery}
         onNewsQuery={setNewsOverride}
         summaries={summaries}
+        store={store}
       />
       <main className="main">
         <div className="header">

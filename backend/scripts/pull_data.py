@@ -1,4 +1,5 @@
-"""Pull history for every configured market, plus the ETFs in exposure.yaml, into the local DuckDB cache.
+"""Pull history for every configured market, plus the ETFs in exposure.yaml, into the bar cache
+(Tiger Cloud when DD_DATABASE_URL is set, else the local DuckDB file).
 
     python scripts/pull_data.py --days 7
     python scripts/pull_data.py --start 2025-12-09 --end 2025-12-11   # a specific demo window
