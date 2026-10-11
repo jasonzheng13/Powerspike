@@ -79,7 +79,9 @@ Two contracts hold the pipeline together, and most changes should preserve them:
    other `cache.*` function dispatches on the connection type. The Tiger side (`ingest/pg.py`) keeps
    `bars` as a hypertable on `ts` plus a real-time **continuous aggregate** `bars_15min` (left-edge
    `time_bucket`, `last(price)`, summed volume) that `cache.load_15min()` reads; on DuckDB the same call
-   is a pandas resample. One connection per process (the dev tier has no pooler), reopened if it drops.
+   is a pandas resample. `pg.save()` calls `refresh_continuous_aggregate` over the window it just wrote,
+   so the aggregate is current when a pull returns; the background policy (every minute, no
+   `start_offset`) covers everything else, and a `start_offset` would hide older re-pulls. One connection per process (the dev tier has no pooler), reopened if it drops.
    Tests always pass an explicit DuckDB path, so they never see `DD_DATABASE_URL`; `tests/test_cache_pg.py`
    runs only when it is set and writes under the `_test:` prefix. `scripts/migrate_cache.py` copies the
    local file into Tiger. `GET /api/store` reports the backend and per-market freshness for the sidebar.

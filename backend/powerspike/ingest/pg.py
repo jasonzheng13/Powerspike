@@ -41,8 +41,10 @@ SCHEMA = [
        WITH NO DATA""",
     # Real-time: rows newer than the last refresh are computed on read, so the view is never stale.
     "ALTER MATERIALIZED VIEW bars_15min SET (timescaledb.materialized_only = false)",
+    # start_offset NULL: the policy may refresh any bucket that changed, however old. Invalidation
+    # tracking makes that cheap, and a 60-day start_offset made older re-pulls invisible.
     """SELECT add_continuous_aggregate_policy('bars_15min',
-         start_offset => INTERVAL '60 days', end_offset => INTERVAL '1 minute',
+         start_offset => NULL, end_offset => INTERVAL '1 minute',
          schedule_interval => INTERVAL '1 minute', if_not_exists => TRUE)""",
 ]
 
@@ -80,6 +82,11 @@ def save(con: psycopg.Connection, market_id: str, df: pd.DataFrame) -> int:
             "INSERT INTO bars SELECT * FROM incoming "
             "ON CONFLICT (market_id, ts) DO UPDATE SET price = EXCLUDED.price, volume = EXCLUDED.volume"
         )
+    # Materialise exactly the window just written so bars_15min is current before this returns
+    # (cannot run inside the transaction above). Real-time mode covers anything newer than this.
+    lo, hi = rows["ts"].min().to_pydatetime(), (rows["ts"].max() + pd.Timedelta(minutes=15)).to_pydatetime()
+    with con.cursor() as cur:
+        cur.execute("CALL refresh_continuous_aggregate('bars_15min', %s, %s)", [lo, hi])
     return len(rows)
 
 

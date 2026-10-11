@@ -6,6 +6,7 @@ Writes under the `_test:` prefix and deletes those rows afterwards.
 import os
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from powerspike.ingest import cache
@@ -20,8 +21,12 @@ def con():
 
     c = pg.connect(os.environ["DD_DATABASE_URL"])
     yield c
+    df = demo_market()
     with c.cursor() as cur:
         cur.execute("DELETE FROM bars WHERE market_id LIKE '_test:%'")
+        # drop the deleted rows from the aggregate now rather than at the policy's next run
+        cur.execute("CALL refresh_continuous_aggregate('bars_15min', %s, %s)",
+                    [df.index.min().to_pydatetime(), (df.index.max() + pd.Timedelta(minutes=15)).to_pydatetime()])
 
 
 def test_pg_roundtrip_and_overwrite(con):
