@@ -71,6 +71,8 @@ Two contracts hold the pipeline together, and most changes should preserve them:
    price rows carry volume 0 and trade rows carry NaN price, and `to_grid` resolves both (`last()` skips
    the NaN prices). Volume is shares traded on *both* outcomes, the same unit as Kalshi contracts. The
    trades feed is paged backwards by `end` because offsets past ~10k return nothing, and 429s are retried.
+   `prices-history` rejects a 1-minute window longer than ~14 days (400) and appends one row stamped
+   "now" to every response, so `price_history` pages in 14-day chunks and drops rows past `end`.
    `ingest/cache.py` persists the grid as `bars(market_id, ts, price, volume)` with
    `PRIMARY KEY (market_id, ts)` and an upsert, so re-pulling an overlapping window overwrites
    rather than duplicates; `market_id` is the `id` from `markets.yaml` (there is no venue column).
@@ -255,7 +257,9 @@ needs a process restart to show up. Env vars resolve as `os.getenv(x) or default
 in a copied `.env.example` fall through to the defaults (`DD_CACHE_PATH` → `backend/data/cache.duckdb`,
 `GEMINI_MODEL` → `gemini-flash-lite-latest`, `DD_DATABASE_URL` → empty, meaning DuckDB). Polymarket entries need `token_id` — the YES outcome's **CLOB
 token** (Gamma `clobTokenIds[0]`), not the market id or slug; Kalshi entries need both `series_ticker`
-and `ticker` because the candlesticks URL uses both.
+and `ticker` because the candlesticks URL uses both. Find Polymarket macro markets through Gamma's
+`/public-search?q=` endpoint: the top-200-by-24h-volume listing that `find_markets.py` uses is all sports
+and crypto, which is why the first Polymarket picks were illiquid.
 
 ### Synthetic data is the test substrate
 
@@ -273,15 +277,23 @@ cached markets are listed first so they take the default slot once they exist.
 Working and tested: `detect.py`, `replay.py`, `ingest/cache.py`, `ingest/equities.py`, `leadlag.py`,
 `api.py`, the frontend on synthetic and cached data. Kalshi ingest is live-tested (dollar-string prices, `volume_fp`). Five markets and 17 ETFs are
 cached locally as of 2026-10-10 (`backend/data/cache.duckdb` is gitignored; re-pull with `pull_data.py`;
-yfinance only serves 1-minute bars for the last ~30 days, so the ETF side of an older demo window
-cannot be re-pulled). On that week all three real spikes fired outside NYSE hours, so their lead/lag is
-measured from the next open: two read `market led (overnight)`, one has too few reacting ETFs.
+yfinance serves 1-minute bars for the last ~30 days and 5-minute bars for ~60; `equities.fetch_plan`
+splits a pull accordingly and `session_grid` carries a 5-minute close forward onto the 1-minute grid, so
+ETF reaction timestamps in the 30–60-day stretch are rounded to 5 minutes; nothing older can be pulled). ETFs are backfilled to 2026-08-27. All 13 real spikes fired outside NYSE hours (08:30 ET releases
+or overnight), so lead/lag is measured from the next open: 4 read `market led (overnight)`, 9 `no equity
+move`, 0 `no data`; only 1 of 8 reacting ETF moves matched the expected direction (`consistent_share`
+0.125), so the direction map in `exposure.yaml` is not yet supported by the data (`run_leadlag.py`).
 
 Validated on real events as of 2026-10-10: `validation/known_events.yaml` scores the settled Kalshi
 contracts `kalshi-fed-sep` (KXFED-26SEP-T3.75) and `kalshi-cpi-aug` on the Aug jobs / PPI / CPI releases
 (all 08:30 ET) plus three quiet controls: 6/6, hit rate 1.0, false-alarm rate 0.0 (`run_validation.py`;
-data via `pull_data.py --start 2026-08-28 --end 2026-09-16 --no-equities`; Polymarket rejects a window
-that long at 1-min fidelity, Kalshi does not). Kalshi closes a contract 5 min before the release it settles
+data via `pull_data.py --start 2026-08-12 --no-equities`). As of 2026-10-11 `markets.yaml` holds 7
+Kalshi and 3 Polymarket markets chosen for volume: the Fed decision legs (`KXFEDDECISION-26SEP-H25`, 18.8M
+contracts, and the Oct leg), CPI m/m and y/y, Aug unemployment (new `labor` event type in `exposure.yaml`),
+the two settled validation contracts, and the three Polymarket Fed hike markets. The dead Polymarket
+markets (`fed-oct-hold`, `tariffs`, `recession`) and `kalshi-fed-oct` were dropped; their rows remain in
+the local cache but `/api/markets` no longer lists them. Kalshi halts a decision contract at 13:59 ET, one
+minute before the 2 PM announcement, so even the decision legs carry only the pre-release repricing. Kalshi closes a contract 5 min before the release it settles
 on, so validate on the releases *before* close, and the candle after close reports bid 0 / ask 1, which
 `kalshi.parse_candles` now drops instead of writing 50%. On the cached live week the only surviving alert
 is the Oct 7 CPI block (40k contracts); the two Kalshi Fed alerts it used to show were one-lot trades

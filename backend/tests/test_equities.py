@@ -63,3 +63,32 @@ def test_shape_yfinance_frame_to_bar_frame():
 
 def test_shape_yfinance_empty():
     assert equities.shape_yfinance(pd.DataFrame()).empty
+
+
+def test_session_grid_spreads_five_minute_rows_onto_minutes_within_a_session():
+    # Yahoo's 5-minute bars (older than ~30 days) must land on the same 1-minute grid
+    # the lead/lag module reads: filled forward inside a session, never across the night.
+    idx = pd.DatetimeIndex(
+        ["2025-12-10 14:30", "2025-12-10 14:35", "2025-12-11 14:30"], tz="UTC"
+    )
+    raw = pd.DataFrame({"price": [100.0, 101.0, 90.0], "volume": [5.0, 7.0, 3.0]}, index=idx)
+    g = equities.session_grid(raw)
+    assert g.loc["2025-12-10 14:33", "price"] == 100.0       # filled from the 14:30 bar
+    assert g.loc["2025-12-10 14:35", "price"] == 101.0
+    assert g.loc["2025-12-11 14:30", "price"] == 90.0        # next day's open is its own bar
+    assert g.index.max() == pd.Timestamp("2025-12-11 14:30", tz="UTC")
+    assert g.loc["2025-12-10 14:33", "volume"] == 0.0        # volume is not spread
+
+
+def test_fetch_plan_uses_five_minute_bars_only_for_the_stretch_yahoo_no_longer_serves_at_one_minute():
+    now = pd.Timestamp("2026-10-11", tz="UTC")
+    recent = now - pd.Timedelta(days=10)
+    old = now - pd.Timedelta(days=45)
+    too_old = now - pd.Timedelta(days=90)
+    cut = now - pd.Timedelta(days=29)
+    floor = now - pd.Timedelta(days=59)
+    assert equities.fetch_plan(recent, now, now=now) == [(recent, now, "1m")]
+    assert equities.fetch_plan(old, now, now=now) == [(old, cut, "5m"), (cut, now, "1m")]
+    assert equities.fetch_plan(old, old + pd.Timedelta(days=3), now=now) == [(old, old + pd.Timedelta(days=3), "5m")]
+    assert equities.fetch_plan(too_old, now, now=now) == [(floor, cut, "5m"), (cut, now, "1m")]
+    assert equities.fetch_plan(too_old, too_old + pd.Timedelta(days=3), now=now) == []

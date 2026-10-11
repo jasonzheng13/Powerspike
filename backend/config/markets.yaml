@@ -3,35 +3,67 @@
 # event_type links a market to config/exposure.yaml (who's exposed).
 # event_sign: +1 when a rising YES price means the event's odds (as defined in
 # exposure.yaml) are rising, -1 when it means the opposite. Default +1.
-# IDs filled 2026-10-09 with the most-traded live contract per slot.
+#
+# Chosen 2026-10-11 for real volume and a price that lives between 5% and 95% (the detector's tail
+# gate), with releases inside the ~60 days yfinance still serves ETF bars for. The dropped Polymarket
+# macro markets (tariffs, recession, Fed hold) traded a few hundred contracts a week and never fired.
 #
 # Polymarket: `token_id` is the CLOB token ID for the YES outcome
-#   (Gamma API market -> clobTokenIds[0]), NOT the market id or slug.
-# Kalshi: needs both `series_ticker` and `ticker`.
+#   (Gamma API market -> clobTokenIds[0]), NOT the market id or slug. Search with
+#   https://gamma-api.polymarket.com/public-search?q=... (the top-200-by-volume listing is all sports).
+#   prices-history serves 1-minute bars in <=14-day chunks (polymarket.price_history pages).
+# Kalshi: needs both `series_ticker` and `ticker`. Kalshi halts a contract shortly before the event
+#   it settles on (5 min before a data release; 13:59 ET for an FOMC decision), so the release itself
+#   is never in the data, only the repricing before it.
 #
-# Find candidates with:  python scripts/find_markets.py fed
+# Find candidates with:  python scripts/find_markets.py --kalshi KXFEDDECISION
 
 markets:
-  # "No change" is the live contract: the cut/hike legs all trade under 1% and never reprice.
-  # YES = Fed holds, so a *falling* price here means rising cut (or hike) odds.
-  - id: fed-oct-hold
-    name: "Fed leaves rates unchanged at the October 2026 meeting"
-    venue: polymarket
-    token_id: "111061902544814266207267295505639408607400625795891618462682726460921782993748"
-    event_type: fed_rates
-    event_sign: -1
-
-  - id: kalshi-fed-oct
-    name: "Fed upper bound above 4.00% after the October 2026 meeting (Kalshi)"
+  # ---- Kalshi ------------------------------------------------------------------------------
+  # Fed decision legs: YES = "hike 25 bps", so YES up = hawkish = cut odds down -> event_sign -1.
+  # The settled September leg traded 18.8M contracts through Aug CPI, Sep jobs, PPI and CPI.
+  - id: kalshi-fed-sep-decision
+    name: "Fed hikes 25 bps at the September 2026 meeting (Kalshi, settled)"
     venue: kalshi
-    series_ticker: "KXFED"
-    ticker: "KXFED-26OCT-T4.00"
+    series_ticker: "KXFEDDECISION"
+    ticker: "KXFEDDECISION-26SEP-H25"
     event_type: fed_rates
     event_sign: -1
 
-  # Settled contracts kept for validation/known_events.yaml: Kalshi serves candles for settled markets,
-  # and these two were open through the Aug jobs (Sep 4), PPI (Sep 10) and CPI (Sep 11) releases.
-  # Kalshi closes a contract 5 min before the release it settles on, so the release itself is never in the data.
+  - id: kalshi-fed-oct-decision
+    name: "Fed hikes 25 bps at the October 2026 meeting (Kalshi)"
+    venue: kalshi
+    series_ticker: "KXFEDDECISION"
+    ticker: "KXFEDDECISION-26OCT-H25"
+    event_type: fed_rates
+    event_sign: -1
+
+  - id: cpi-sep
+    name: "September 2026 CPI rises more than 0.5% (Kalshi)"
+    venue: kalshi
+    series_ticker: "KXCPI"
+    ticker: "KXCPI-26SEP-T0.5"
+    event_type: inflation
+    event_sign: 1
+
+  - id: kalshi-cpi-yoy-sep
+    name: "CPI inflation above 3.6% for the year to September 2026 (Kalshi)"
+    venue: kalshi
+    series_ticker: "KXCPIYOY"
+    ticker: "KXCPIYOY-26SEP-T3.6"
+    event_type: inflation
+    event_sign: 1
+
+  # YES = unemployment above 4.2%, so YES up = weaker labour market -> event_sign +1 under `labor`.
+  - id: kalshi-unemp-aug
+    name: "August 2026 unemployment rate above 4.2% (Kalshi, settled)"
+    venue: kalshi
+    series_ticker: "KXU3"
+    ticker: "KXU3-26AUG-T4.2"
+    event_type: labor
+    event_sign: 1
+
+  # Settled contracts kept for validation/known_events.yaml (Aug jobs Sep 4, PPI Sep 10, CPI Sep 11).
   - id: kalshi-fed-sep
     name: "Fed upper bound above 3.75% after the September 2026 meeting (Kalshi, settled)"
     venue: kalshi
@@ -48,32 +80,26 @@ markets:
     event_type: inflation
     event_sign: 1
 
-  - id: cpi-sep
-    name: "September 2026 CPI rises more than 0.5% (Kalshi)"
-    venue: kalshi
-    series_ticker: "KXCPI"
-    ticker: "KXCPI-26SEP-T0.5"
-    event_type: inflation
-    event_sign: 1
-
-  - id: tariffs
-    name: "Trump raises tariffs on Canada by October 31"
+  # ---- Polymarket --------------------------------------------------------------------------
+  # Polymarket's liquid macro book (2026-10) is the Fed hike legs; everything else sits under 5c.
+  - id: poly-fed-oct-hike
+    name: "Fed raises rates 25 bps at the October 2026 meeting (Polymarket)"
     venue: polymarket
-    token_id: "106274584635199268300198491197529827229467398908367234278985231598662709636224"
-    event_type: tariffs
-    event_sign: 1
+    token_id: "55159722761418013044126414276680602270318000841690689684819994448621694923050"
+    event_type: fed_rates
+    event_sign: -1
 
-  # shutdown: no clean live market as of 2026-10-09 (only compound "shutdown AND which party ..."
-  # contracts with ~$7/day volume). Re-enable when a plain shutdown market lists.
-  # - id: shutdown
-  #   name: "Government shutdown"
-  #   venue: polymarket
-  #   token_id: "TODO_CLOB_TOKEN_ID"
-  #   event_type: shutdown
-
-  - id: recession
-    name: "US recession by end of 2026"
+  - id: poly-fed-dec-hike
+    name: "Fed raises rates 25 bps at the December 2026 meeting (Polymarket)"
     venue: polymarket
-    token_id: "100379208559626151022751801118534484742123694725746262280150222742563282755057"
-    event_type: recession
-    event_sign: 1
+    token_id: "111662129652828266889360374468657435151479595863413519836161861837506140152890"
+    event_type: fed_rates
+    event_sign: -1
+
+  # Listed 2026-09-16, so it has the shortest history of the set.
+  - id: poly-fed-another-hike
+    name: "Another Fed rate hike in 2026 (Polymarket)"
+    venue: polymarket
+    token_id: "834988939366537589681339435844742816680296103724655311351481456389958777625"
+    event_type: fed_rates
+    event_sign: -1

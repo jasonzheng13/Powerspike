@@ -46,3 +46,11 @@ recession:
   edgar_query: '"economic downturn" "covenant"'
   forms: [10-K]
   direction_note: "Recession odds up: HY spreads wider, cyclicals and levered issuers hit first."
+
+labor:
+  label: "Labour market"
+  etfs: [TLT, HYG, XLY, KRE, XLF]
+  expected: {TLT: 1, HYG: -1, XLY: -1, KRE: -1, XLF: -1}
+  edgar_query: '"labor market" "wage" "hiring"'
+  forms: [10-K, 10-Q]
+  direction_note: "Weaker labour market (unemployment up): duration bid, HY spreads wider, consumer discretionary and banks under pressure."

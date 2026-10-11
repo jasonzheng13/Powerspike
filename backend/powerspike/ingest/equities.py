@@ -9,9 +9,14 @@ around the clock. `session_grid` therefore applies `to_grid` *per session* so a 
 never forward-filled across the overnight or weekend gap, and `next_open` / `in_session`
 let lead/lag say "measured from the next open" for an after-hours spike.
 
-Historical source: yfinance 1-minute bars (only the last ~30 days exist, max 7 days per
-request). A live source (Alpaca) slots in behind the same `shape_*` + `session_grid` path.
-Holidays are ignored: a market holiday simply has no bars and no reaction is found.
+Historical source: yfinance. 1-minute bars exist only for the last ~30 days and 5-minute bars
+for the last ~60 (max 7 days per request). `fetch_plan` splits a window into the stretch that
+still has 1-minute bars and the older stretch that must be pulled at 5 minutes; `session_grid`
+puts both on the same 1-minute grid (a 5-minute close is carried forward over the next four
+minutes inside the session), so nothing downstream knows the difference beyond a reaction
+timestamp being rounded to 5 minutes in the backfilled stretch. A live source (Alpaca) slots in
+behind the same `shape_*` + `session_grid` path. Holidays are ignored: a market holiday simply
+has no bars and no reaction is found.
 """
 
 from __future__ import annotations
@@ -73,8 +78,40 @@ def shape_yfinance(raw: pd.DataFrame) -> pd.DataFrame:
     return out.dropna(subset=["price"])
 
 
-def yfinance_bars(ticker: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
-    """1-minute bars from Yahoo in <=7-day chunks. Raises on a transport error like the venue clients."""
+ONE_MIN_DAYS = 29   # Yahoo serves 1-minute bars for the last ~30 days
+FIVE_MIN_DAYS = 59  # and 5-minute bars for the last ~60
+
+
+def fetch_plan(start: pd.Timestamp, end: pd.Timestamp, now: pd.Timestamp | None = None
+               ) -> list[tuple[pd.Timestamp, pd.Timestamp, str]]:
+    """Split [start, end) into (start, end, interval) pieces Yahoo can still serve, oldest first.
+
+    Older than ~60 days is dropped, 30-60 days is "5m", the rest "1m". Empty when nothing remains.
+    """
+    now = pd.Timestamp.now(tz="UTC") if now is None else now
+    cut = now - pd.Timedelta(days=ONE_MIN_DAYS)
+    floor = now - pd.Timedelta(days=FIVE_MIN_DAYS)
+    start, end = pd.Timestamp(start), pd.Timestamp(end)
+    plan = []
+    lo, hi = max(start, floor), min(end, cut)
+    if lo < hi:
+        plan.append((lo, hi, "5m"))
+    lo, hi = max(start, cut), end
+    if lo < hi:
+        plan.append((lo, hi, "1m"))
+    return plan
+
+
+def _dedupe(frames: list[pd.DataFrame]) -> pd.DataFrame:
+    frames = [f for f in frames if not f.empty]
+    if not frames:
+        return EMPTY.copy()
+    df = pd.concat(frames)
+    return df[~df.index.duplicated(keep="last")].sort_index()
+
+
+def yfinance_bars(ticker: str, start: pd.Timestamp, end: pd.Timestamp, interval: str = "1m") -> pd.DataFrame:
+    """Bars from Yahoo at `interval` in <=7-day chunks. Raises on a transport error like the venue clients."""
     import yfinance as yf
 
     t = yf.Ticker(ticker)
@@ -83,11 +120,12 @@ def yfinance_bars(ticker: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.Dat
     end = pd.Timestamp(end).tz_convert("UTC")
     while cur < end:
         chunk_end = min(end, cur + pd.Timedelta(days=7))
-        raw = t.history(start=cur, end=chunk_end, interval="1m", auto_adjust=False, prepost=False)
+        raw = t.history(start=cur, end=chunk_end, interval=interval, auto_adjust=False, prepost=False)
         frames.append(shape_yfinance(raw))
         cur = chunk_end
-    frames = [f for f in frames if not f.empty]
-    if not frames:
-        return EMPTY.copy()
-    df = pd.concat(frames)
-    return df[~df.index.duplicated(keep="last")].sort_index()
+    return _dedupe(frames)
+
+
+def backfill_bars(ticker: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+    """`yfinance_bars` over every piece of `fetch_plan`, joined; raw bars, not yet on the grid."""
+    return _dedupe([yfinance_bars(ticker, s, e, interval=iv) for s, e, iv in fetch_plan(start, end)])
