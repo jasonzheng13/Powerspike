@@ -6,8 +6,8 @@
     python scripts/pull_data.py --no-equities                          # markets only
     python scripts/pull_data.py --equities-only --days 7               # refresh the ETFs only
 
-ETF bars come from yfinance at 1-minute resolution, which only exists for the last ~30 days;
-older windows are skipped with a warning. They are cached as `equity:<TICKER>`.
+ETF bars come from yfinance: 1-minute for the last ~30 days, 5-minute (carried forward onto the
+1-minute grid) for the ~30 days before that, nothing older. They are cached as `equity:<TICKER>`.
 """
 
 import argparse
@@ -32,8 +32,10 @@ args = ap.parse_args()
 end = pd.Timestamp(args.end, tz="UTC") if args.end else pd.Timestamp.now(tz="UTC")
 start = pd.Timestamp(args.start, tz="UTC") if args.start else end - pd.Timedelta(days=args.days)
 
-con = cache.connect()
+# cache.connect() per item: it returns the process's one connection unless that dropped (Tiger
+# closes idle sockets, and macOS ran out of ephemeral ports mid-pull once), in which case it reopens.
 for m in [] if args.equities_only else config.markets():
+    con = cache.connect()
     if "TODO" in str(m.get("token_id", "")) + str(m.get("ticker", "")):
         print(f"skip {m['id']}: fill in its IDs in config/markets.yaml")
         continue
@@ -45,12 +47,16 @@ for m in [] if args.equities_only else config.markets():
 
 if args.no_equities:
     sys.exit(0)
-if start < pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=29):
-    print(f"skip equities: yfinance has no 1-minute bars older than ~30 days (start {start.date()})")
+plan = equities.fetch_plan(start, end)
+if not plan:
+    print(f"skip equities: yfinance has no bars older than ~60 days (window {start.date()}..{end.date()})")
     sys.exit(0)
+for s, e, iv in plan:
+    print(f"equities: {s.date()}..{e.date()} at {iv}")
 for t in expose.all_etfs():
     try:
-        n = cache.save(con, equities.equity_id(t), equities.session_grid(equities.yfinance_bars(t, start, end)))
+        con = cache.connect()
+        n = cache.save(con, equities.equity_id(t), equities.session_grid(equities.backfill_bars(t, start, end)))
         print(f"{equities.equity_id(t)}: {n} bars")
     except Exception as e:
         print(f"{equities.equity_id(t)}: FAILED {type(e).__name__}: {e}")

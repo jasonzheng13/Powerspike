@@ -2,8 +2,9 @@
 # For each: the market, when the news hit (UTC), and whether we expect an alert.
 # The harness counts a hit if an alert's peak lands within `tolerance_min` of `time`.
 #
-# Data: scripts/pull_data.py --start 2026-08-28 --end 2026-09-16 --no-equities
-# Markets are the settled Kalshi contracts in config/markets.yaml (kalshi-fed-sep, kalshi-cpi-aug).
+# Data: scripts/pull_data.py --start 2026-08-12 --no-equities
+# Markets are the settled Kalshi contracts in config/markets.yaml (kalshi-fed-sep, kalshi-cpi-aug,
+# kalshi-fed-sep-decision, kalshi-unemp-aug).
 # All releases below hit at 08:30 ET = 12:30 UTC. The Fed market repriced on each; the CPI market
 # barely moved on jobs or PPI, which makes those two honest quiet controls on a day with real news.
 
@@ -39,3 +40,29 @@ events:
     market: kalshi-cpi-aug
     time: "2026-09-10T12:30:00Z"
     expect_alert: false
+
+  # Added 2026-10-11 with the 18.8M-contract September decision leg and the August unemployment contract.
+  - name: "August jobs report moves Sep decision odds"
+    market: kalshi-fed-sep-decision
+    time: "2026-09-04T12:30:00Z"
+    expect_alert: true
+
+  - name: "August PPI moves Sep decision odds"
+    market: kalshi-fed-sep-decision
+    time: "2026-09-10T12:30:00Z"
+    expect_alert: true
+
+  - name: "August CPI moves Sep decision odds"
+    market: kalshi-fed-sep-decision
+    time: "2026-09-11T12:30:00Z"
+    expect_alert: true
+
+  - name: "quiet control: Sep decision market, no release (Tue Sep 8 11:00 ET)"
+    market: kalshi-fed-sep-decision
+    time: "2026-09-08T15:00:00Z"
+    expect_alert: false
+
+  - name: "July jobs report moves Aug unemployment odds"
+    market: kalshi-unemp-aug
+    time: "2026-08-07T12:30:00Z"
+    expect_alert: true

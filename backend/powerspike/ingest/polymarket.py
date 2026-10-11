@@ -45,20 +45,34 @@ def search_markets(query: str = "", limit: int = 20, active: bool = True) -> lis
     return out[:limit]
 
 
+HISTORY_CHUNK_DAYS = 14  # live (2026-10-11): a longer 1-minute window is a 400; 30 days is rejected
+
+
 def price_history(token_id: str, start: pd.Timestamp, end: pd.Timestamp, fidelity: int = 1) -> pd.DataFrame:
     """Price history for one outcome token. Polymarket returns no volume here, so `volume` is NaN.
 
-    TODO: the API may cap how long a window you can ask for at 1-minute fidelity;
-    if so, page through [start, end] in chunks.
+    Pages through [start, end] in `HISTORY_CHUNK_DAYS` windows. Every response also carries one
+    row stamped "now" (the current price) regardless of `endTs`; rows past `end` are dropped so
+    `to_grid` does not forward-fill a flat line from the window to today.
     """
-    params = {"market": token_id, "startTs": int(start.timestamp()), "endTs": int(end.timestamp()), "fidelity": fidelity}
-    r = httpx.get(f"{CLOB}/prices-history", params=params, timeout=30)
-    r.raise_for_status()
-    hist = r.json().get("history", [])
+    hist = []
+    cur = pd.Timestamp(start)
+    end = pd.Timestamp(end)
+    while cur < end:
+        chunk_end = min(end, cur + pd.Timedelta(days=HISTORY_CHUNK_DAYS))
+        params = {"market": token_id, "startTs": int(cur.timestamp()), "endTs": int(chunk_end.timestamp()), "fidelity": fidelity}
+        r = httpx.get(f"{CLOB}/prices-history", params=params, timeout=30)
+        r.raise_for_status()
+        hist.extend(r.json().get("history", []))
+        cur = chunk_end
     df = pd.DataFrame(hist)
     if df.empty:
         return pd.DataFrame(columns=["price", "volume"])
     df.index = pd.to_datetime(df["t"], unit="s", utc=True)
+    df = df[df.index <= end]
+    df = df[~df.index.duplicated(keep="last")].sort_index()
+    if df.empty:
+        return pd.DataFrame(columns=["price", "volume"])
     return pd.DataFrame({"price": df["p"].astype(float), "volume": float("nan")})
 
 

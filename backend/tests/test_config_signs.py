@@ -15,9 +15,9 @@ def test_expected_signs_match_direction_notes():
 
 
 def test_markets_declare_event_sign():
-    assert config.market("fed-oct-hold")["event_sign"] == -1   # YES = hold, so YES up = cut odds down
-    assert config.market("recession")["event_sign"] == 1
-    assert expose.event_sign("fed-oct-hold") == -1
+    assert config.market("poly-fed-oct-hike")["event_sign"] == -1   # YES = hike, so YES up = cut odds down
+    assert config.market("kalshi-unemp-aug")["event_sign"] == 1      # YES = unemployment up = weaker labour
+    assert expose.event_sign("poly-fed-oct-hike") == -1
     assert expose.event_sign("synthetic-demo") == 1              # unknown market defaults to +1
 
 

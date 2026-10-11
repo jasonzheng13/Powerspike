@@ -95,3 +95,28 @@ def test_rate_limit_is_retried(fake, monkeypatch):
 
     monkeypatch.setattr(polymarket.httpx, "get", flaky)
     assert polymarket.trades_volume("0xabc", T0, T0 + pd.Timedelta(hours=1)).sum() == 3.0
+
+
+def test_price_history_pages_in_14_day_chunks_and_drops_the_trailing_now_row(monkeypatch):
+    # Live behaviour (probed 2026-10-11): /prices-history rejects a 1-minute window longer than
+    # ~14 days with a 400, and every response ends with one row stamped "now", past endTs.
+    NOW = int(pd.Timestamp("2026-10-11", tz="UTC").timestamp())
+    calls = []
+
+    def api(url, params=None, timeout=None):
+        assert url.endswith("/prices-history")
+        span = params["endTs"] - params["startTs"]
+        assert span <= 14 * 86400, f"window of {span / 86400:.1f} days would be a 400 live"
+        calls.append((params["startTs"], params["endTs"]))
+        hist = [{"t": t, "p": 0.5} for t in range(params["startTs"], params["endTs"], 3600)]
+        hist.append({"t": NOW, "p": 0.9})
+        return httpx.Response(200, json={"history": hist}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(polymarket.httpx, "get", api)
+    start, end = pd.Timestamp("2026-08-12", tz="UTC"), pd.Timestamp("2026-09-11", tz="UTC")
+    df = polymarket.price_history("tok", start, end)
+    assert len(calls) >= 3
+    assert calls[0][0] == int(start.timestamp()) and calls[-1][1] == int(end.timestamp())
+    assert df.index.max() < end                      # the "now" rows are gone
+    assert len(df) == 30 * 24                        # one row per hour, nothing duplicated
+    assert df.index.is_monotonic_increasing

@@ -20,6 +20,7 @@ const NEWS_QUERY_BY_EVENT: Record<string, string> = {
   tariffs: "tariffs OR tariff OR Canada trade",
   recession: 'recession OR "jobs report" OR GDP',
   shutdown: '"government shutdown" OR "spending bill"',
+  labor: '"jobs report" OR unemployment OR payrolls',
 };
 
 export function autoNewsQuery(eventType: string | undefined): string {
