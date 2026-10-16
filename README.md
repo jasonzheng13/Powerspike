@@ -67,7 +67,6 @@ Kalshi ─────┘                                  ▲        └─► 
 | 4 | **Expose**: event to ETFs + companies naming the risk in filings | `powerspike/expose.py`, `config/exposure.yaml` | ETF map done; EDGAR search written, not live-tested |
 | 5 | **API**: markets, series, alerts, explain, exposure over HTTP | `powerspike/api.py` | **Working, tested** |
 | 5 | **Dashboard**: chart, alert markers, alert cards, replay | `frontend/` (React + TypeScript) | **Working** on synthetic and cached data |
-| · | Replay clock | `powerspike/replay.py` | Working |
 | · | Validation harness | `powerspike/validate.py`, `validation/known_events.yaml` | Working; needs real events + cached data |
 
 ### The detector (`detect.py`)
@@ -111,10 +110,9 @@ backend/
     explain.py                GDELT headlines + Gemini "why"
     expose.py                 ETF map + EDGAR full-text search
     leadlag.py                did the market lead or lag its ETFs? (own confirmed_at)
-    replay.py                 replay clock (the frontend applies the same confirmed_at rule)
     validate.py               hit rate / false-alarm rate on known events
     synthetic.py              synthetic markets for tests and the empty-cache demo
-  scripts/                    smoke_test_apis, find_markets, pull_data, seed_demo_data, run_validation, run_leadlag
+  scripts/                    smoke_test_apis, find_markets, pull_data, migrate_cache, run_validation, run_leadlag
   validation/known_events.yaml  events for the proof slide
   tests/                      detector, cache/replay and API tests
 frontend/                     React 19 + TypeScript + Vite

@@ -2,8 +2,7 @@
 
 The detector, explainer and exposure lookup run here; the browser only owns the
 replay clock. Every alert carries `confirmed_at`, and the frontend filters on
-`confirmed_at <= now` exactly as replay.py does, so the demo stays free of
-look-ahead.
+`confirmed_at <= now` (lib/replay.ts), so the demo stays free of look-ahead.
 
 If `frontend/dist` exists (``npm run build``) it is served at `/`, so one process
 hosts the whole demo.

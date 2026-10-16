@@ -29,7 +29,6 @@ python scripts/find_markets.py --kalshi KXFED
 python scripts/pull_data.py --start 2025-12-09 --end 2025-12-11   # or --days 7; also pulls the ETFs (--no-equities / --equities-only)
 python scripts/run_leadlag.py             # lead/lag of every cached spike vs its ETFs, plus the summary (proof slide)
 python scripts/migrate_cache.py           # copy the local DuckDB cache into Tiger Cloud (needs DD_DATABASE_URL)
-python scripts/seed_demo_data.py          # synthetic market into the cache (replay/validate only; the API builds demo_market() itself and ignores this row)
 python scripts/run_validation.py          # hit rate / false-alarm rate on known_events.yaml
 
 # frontend — run from frontend/
@@ -53,8 +52,8 @@ Polymarket ─┐
 Kalshi ─────┘                 ▲               ▲       ├─► expose.py  (EDGAR + ETF map) ┼─► api.py ─► frontend/src
 yfinance ───► ingest/equities ┘               │       └─► leadlag.py (ETF reaction)   ─┘
                                               │
-                              replay.py (demo clock; the frontend inlines
-                              the same confirmed_at filter in lib/replay.ts)    validate.py (proof slide)
+                              lib/replay.ts (frontend replay clock: the only
+                              confirmed_at filter)                    validate.py (proof slide)
 ```
 
 Two contracts hold the pipeline together, and most changes should preserve them:
@@ -100,14 +99,14 @@ Two contracts hold the pipeline together, and most changes should preserve them:
 2. **`Spike` with `confirmed_at`.** `detect.detect()` returns `Spike` objects whose `confirmed_at` is the
    earliest time the alert could honestly have been shown live, because the persistence test looks `hold`
    bars *into the future* (`confirmed_at` = peak + `hold` bars). `/api/markets/{id}/alerts` returns *all*
-   spikes for the series; `replay.py` and the frontend both filter on `confirmed_at <= now`, which is what
-   keeps the demo free of look-ahead. The frontend does not call `replay.py`; `visibleAlerts()` in
-   `frontend/src/lib/replay.ts` re-implements the same filter on a client-side clock (`pos` bars revealed,
-   advanced by a `setInterval` in `App.tsx`). Anything that adds a forward-looking detector input must push
+   spikes for the series; the frontend filters on `confirmed_at <= now`, which is what keeps the demo
+   free of look-ahead. `visibleAlerts()` in `frontend/src/lib/replay.ts` is that filter, on a
+   client-side clock (`pos` bars revealed, advanced by a `setInterval` in `App.tsx`); there is no
+   backend replay module. Anything that adds a forward-looking detector input must push
    `confirmed_at` out accordingly. Two known gaps: drift alerts resample to 15-minute bars labelled by
-   the *left* edge, so a drift's `confirmed_at` understates by up to ~14 minutes; and `replay()` runs
+   the *left* edge, so a drift's `confirmed_at` understates by up to ~14 minutes; and the replay runs
    `detect()` once on the full series then reveals by time — that this matches a live truncated run is
-   unverified (TODO at `replay.py:30`). **Lead/lag results carry their own `confirmed_at`** (see below)
+   unverified. **Lead/lag results carry their own `confirmed_at`** (see below)
    because the ETF search looks `lookaround` minutes past the market peak; the card hides the row and
    the ETF chart hides the reaction marker until the clock passes it (`revealed()` in `lib/replay.ts`).
 
@@ -274,7 +273,7 @@ cached markets are listed first so they take the default slot once they exist.
 
 ## Current state
 
-Working and tested: `detect.py`, `replay.py`, `ingest/cache.py`, `ingest/equities.py`, `leadlag.py`,
+Working and tested: `detect.py`, `ingest/cache.py`, `ingest/equities.py`, `leadlag.py`,
 `api.py`, the frontend on synthetic and cached data. Kalshi ingest is live-tested (dollar-string prices, `volume_fp`). Five markets and 17 ETFs are
 cached locally as of 2026-10-10 (`backend/data/cache.duckdb` is gitignored; re-pull with `pull_data.py`;
 yfinance serves 1-minute bars for the last ~30 days and 5-minute bars for ~60; `equities.fetch_plan`

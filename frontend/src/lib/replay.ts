@@ -2,7 +2,7 @@
 
 import type { Alert } from "../types";
 
-/** Alerts the desk could honestly have shown at `now` (same rule as backend replay.py). */
+/** Alerts the desk could honestly have shown at `now`: the only look-ahead filter in the app. */
 export function visibleAlerts(alerts: Alert[], now: string | undefined): Alert[] {
   if (!now) return [];
   const nowMs = Date.parse(now);
