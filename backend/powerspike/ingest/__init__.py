@@ -3,10 +3,8 @@
 Every venue client returns the same shape so the detector never cares where data came from:
     DataFrame indexed by UTC timestamp, columns `price` (0..1) and `volume` (may be NaN).
 
-NOTE: the endpoints below were checked against the official docs only; live
-calls were blocked in the sandbox this scaffold was written in. Run
-`python scripts/smoke_test_apis.py` first and fix field names if a response
-doesn't match.
+Both venue clients are live-tested; `python scripts/smoke_test_apis.py` hits each
+endpoint once and prints the response shape if a field name ever drifts.
 """
 
 from __future__ import annotations

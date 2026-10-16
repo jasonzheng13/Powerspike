@@ -8,7 +8,7 @@ export interface Summary {
   alerts: Alert[];
 }
 
-/** Series + alerts for every market, shared by the overview strip and the sidebar. */
+/** Series + alerts for every market, for the sidebar's market list and status line. */
 export function useMarketSummaries(markets: Market[], params: DetectorInputs): Record<string, Summary> {
   const [data, setData] = useState<Record<string, Summary>>({});
 

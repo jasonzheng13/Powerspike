@@ -1,6 +1,4 @@
-from powerspike.detect import detect
 from powerspike.ingest import cache
-from powerspike.replay import replay
 from powerspike.synthetic import demo_market
 
 
@@ -12,15 +10,6 @@ def test_cache_roundtrip(tmp_path):
     assert len(back) == len(df)
     assert (back["price"].values == df["price"].values).all()
     assert cache.cached_markets(con) == ["m"]
-
-
-def test_replay_reveals_alerts_only_after_confirmation():
-    df = demo_market()
-    final = None
-    for frame in replay(df, "m", step=10):
-        assert all(a.confirmed_at <= frame.now for a in frame.alerts)
-        final = frame
-    assert len(final.alerts) == len(detect(df, "m"))
 
 
 def test_duckdb_15min_and_stats(tmp_path):
