@@ -120,3 +120,19 @@ def test_price_history_pages_in_14_day_chunks_and_drops_the_trailing_now_row(mon
     assert df.index.max() < end                      # the "now" rows are gone
     assert len(df) == 30 * 24                        # one row per hour, nothing duplicated
     assert df.index.is_monotonic_increasing
+
+
+def test_event_markets_lists_each_leg_with_its_yes_token(monkeypatch):
+    def fake_get(url, params=None, timeout=None):
+        assert url.endswith("/events") and params == {"slug": "largest-company"}
+        body = [{"markets": [
+            {"question": "Will NVIDIA be the largest?", "volume": "1417904.5", "outcomePrices": '["0.695", "0.305"]',
+             "clobTokenIds": '["111", "222"]'},
+            {"question": "Will Company B be the largest?", "volume": "0", "outcomePrices": None, "clobTokenIds": '["333", "444"]'},
+        ]}]
+        return httpx.Response(200, json=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(polymarket.httpx, "get", fake_get)
+    legs = polymarket.event_markets("largest-company")
+    assert legs[0] == {"question": "Will NVIDIA be the largest?", "token_id": "111", "volume": 1417904.5, "yes_price": 0.695}
+    assert legs[1]["yes_price"] is None and legs[1]["volume"] == 0.0

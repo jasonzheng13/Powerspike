@@ -42,5 +42,16 @@ def market(market_id: str) -> dict:
 
 
 @lru_cache
+def companies() -> list[dict]:
+    """Tech companies with a news query and their Polymarket contracts (config/companies.yaml)."""
+    return yaml.safe_load((CONFIG_DIR / "companies.yaml").read_text())["companies"]
+
+
+def company(ticker: str) -> dict | None:
+    t = ticker.upper()
+    return next((c for c in companies() if c["ticker"] == t), None)
+
+
+@lru_cache
 def exposure() -> dict:
     return yaml.safe_load((CONFIG_DIR / "exposure.yaml").read_text())

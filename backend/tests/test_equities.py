@@ -92,3 +92,12 @@ def test_fetch_plan_uses_five_minute_bars_only_for_the_stretch_yahoo_no_longer_s
     assert equities.fetch_plan(old, old + pd.Timedelta(days=3), now=now) == [(old, old + pd.Timedelta(days=3), "5m")]
     assert equities.fetch_plan(too_old, now, now=now) == [(floor, cut, "5m"), (cut, now, "1m")]
     assert equities.fetch_plan(too_old, too_old + pd.Timedelta(days=3), now=now) == []
+
+
+def test_prev_close_is_the_last_completed_session_close():
+    fri_close = pd.Timestamp("2025-12-12 21:00", tz="UTC")           # Friday 16:00 EST
+    assert equities.prev_close(pd.Timestamp("2025-12-13 12:00", tz="UTC")) == fri_close   # Saturday
+    assert equities.prev_close(pd.Timestamp("2025-12-15 15:00", tz="UTC")) == fri_close   # Monday mid-session
+    mon_close = pd.Timestamp("2025-12-15 21:00", tz="UTC")
+    assert equities.prev_close(pd.Timestamp("2025-12-16 01:00", tz="UTC")) == mon_close   # Monday 20:00 ET
+    assert equities.prev_close(mon_close) == mon_close                                     # at the close itself

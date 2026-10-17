@@ -1,0 +1,100 @@
+# Tech companies the stock dashboard knows about. Any ticker can be searched; this file adds a name,
+# a GDELT news query and the Polymarket contract(s) whose odds are compared with the stock at each
+# spike. The FIRST contract is the one shown and scored; later ones are fallbacks for an operator.
+#
+# event_sign: +1 when a rising YES price is good for the stock, -1 when it is bad.
+# token_id: the YES outcome's CLOB token (Gamma clobTokenIds[0]), resolved with
+#   python scripts/find_markets.py --event-slug <event slug>
+# Volumes in the comments are lifetime shares on 2026-10-17. Kalshi has no single-stock price
+# contracts (only Nasdaq-100 ranges), so every contract here is Polymarket. A leg priced under ~1%
+# (MSFT/AMZN "largest company") clips to a constant in log-odds and always reads "contract quiet";
+# such legs are listed second or left out.
+companies:
+  - ticker: NVDA
+    name: Nvidia
+    sector: semis
+    news_query: '"Nvidia" OR NVDA'
+    contracts:
+      - id: poly:largest-company-dec-2026-nvda
+        venue: polymarket
+        name: Largest company by market cap, Dec 31 2026
+        question: Will NVIDIA be the largest company in the world by market cap on December 31?
+        token_id: "11876606915924142133615854761923277060697657209957870741155164849437788272266"  # 70%, 1.42M
+        event_sign: 1
+      - id: poly:nvda-close-above-210-oct-19-2026
+        venue: polymarket
+        name: NVDA closes above $210 on Oct 19
+        question: Will NVIDIA (NVDA) close above $210 on October 19?
+        token_id: "93128067651624508466874413283734134278650484526866952384911618204253408660128"  # 71%, 30 (thin)
+        event_sign: 1
+  - ticker: AAPL
+    name: Apple
+    sector: consumer tech
+    news_query: '"Apple" OR AAPL'
+    contracts:
+      - id: poly:largest-company-dec-2026-aapl
+        venue: polymarket
+        name: Largest company by market cap, Dec 31 2026
+        question: Will Apple be the largest company in the world by market cap on December 31?
+        token_id: "9875273331604434310973374077817381730908757452538191940842519381772366848"  # 28%, 1.20M
+        event_sign: 1
+  - ticker: MSFT
+    name: Microsoft
+    sector: hyperscalers
+    news_query: '"Microsoft" OR MSFT'
+    contracts:
+      - id: poly:msft-close-above-520-oct-19-2026
+        venue: polymarket
+        name: MSFT closes above $520 on Oct 19
+        question: Will Microsoft (MSFT) close above $520 on October 19?
+        token_id: "100077845349983416851531529156568327943562763819033457730817600997276597210529"  # 82%, 2.0k
+        event_sign: 1
+      - id: poly:largest-company-dec-2026-msft
+        venue: polymarket
+        name: Largest company by market cap, Dec 31 2026
+        question: Will Microsoft be the largest company in the world by market cap on December 31?
+        token_id: "391670908629060088409431896998377161667071768186645889213963384874929102170"  # 0.35%, 1.09M (pinned)
+        event_sign: 1
+  - ticker: TSLA
+    name: Tesla
+    sector: consumer tech
+    news_query: '"Tesla" OR TSLA'
+    contracts:
+      - id: poly:tsla-above-350-end-oct-2026
+        venue: polymarket
+        name: TSLA closes above $350 end of October
+        question: Will Tesla (TSLA) close above $350 end of October?
+        token_id: "91854443304810891997602557509875017578794150376322604606956818876018368768526"  # 52%, 972
+        event_sign: 1
+  - ticker: GOOGL
+    name: Alphabet
+    sector: hyperscalers
+    news_query: '"Alphabet" OR Google OR GOOGL'
+    contracts:
+      - id: poly:largest-company-dec-2026-googl
+        venue: polymarket
+        name: Largest company by market cap, Dec 31 2026
+        question: Will Alphabet be the largest company in the world by market cap on December 31?
+        token_id: "62009449847159122385971991480139610869824965029008686522071073076098387124747"  # 2%, 820k (near the tail)
+        event_sign: 1
+  - ticker: AMZN
+    name: Amazon
+    sector: hyperscalers
+    news_query: '"Amazon" OR AMZN'
+    contracts: []   # its "largest company" leg sits at 0.05%: no information in the odds
+  - ticker: META
+    name: Meta Platforms
+    sector: hyperscalers
+    news_query: '"Meta Platforms" OR "Meta stock" OR Zuckerberg'
+    contracts: []   # no company-level Polymarket contract on 2026-10-17
+  - ticker: AMD
+    name: AMD
+    sector: semis
+    news_query: '"Advanced Micro Devices" OR AMD'
+    contracts:
+      - id: poly:amd-q3-data-center-revenue-above-8b
+        venue: polymarket
+        name: AMD Q3 data-center revenue above $8B
+        question: Will Advanced Micro Devices (AMD) Q3 Data Center revenue be above $8B?
+        token_id: "49223634689192756179085616931226141784743453670565357642957074365532213872877"  # 41%, 146 (thin)
+        event_sign: 1

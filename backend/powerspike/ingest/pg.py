@@ -125,6 +125,13 @@ def load_15min(con: psycopg.Connection, market_id: str) -> pd.DataFrame:
     return df.set_index("ts")
 
 
+def last_ts(con: psycopg.Connection, market_id: str) -> pd.Timestamp | None:
+    with con.cursor() as cur:
+        cur.execute("SELECT max(ts) FROM bars WHERE market_id = %s", [market_id])
+        row = cur.fetchone()
+    return None if row is None or row[0] is None else pd.Timestamp(row[0]).tz_convert("UTC")
+
+
 def cached_markets(con: psycopg.Connection) -> list[str]:
     with con.cursor() as cur:
         cur.execute("SELECT DISTINCT market_id FROM bars ORDER BY 1")

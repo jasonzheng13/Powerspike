@@ -54,6 +54,17 @@ def next_open(ts: pd.Timestamp) -> pd.Timestamp:
     return (day + pd.Timedelta(hours=OPEN.hour, minutes=OPEN.minute)).tz_convert("UTC")
 
 
+def prev_close(ts: pd.Timestamp) -> pd.Timestamp:
+    """16:00 ET of the most recent completed session at or before `ts` (the close itself counts)."""
+    t = pd.Timestamp(ts).tz_convert(NY)
+    day = t.normalize()
+    if t.time() < CLOSE or t.weekday() >= 5:
+        day -= pd.Timedelta(days=1)
+    while day.weekday() >= 5:
+        day -= pd.Timedelta(days=1)
+    return (day + pd.Timedelta(hours=CLOSE.hour, minutes=CLOSE.minute)).tz_convert("UTC")
+
+
 def session_grid(df: pd.DataFrame, freq: str = "1min") -> pd.DataFrame:
     """`to_grid` applied within each NYSE session, so nothing is filled across the gap."""
     from . import to_grid  # local import: ingest/__init__ imports this module

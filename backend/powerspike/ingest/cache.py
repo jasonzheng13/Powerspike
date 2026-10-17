@@ -87,6 +87,15 @@ def load_15min(con, market_id: str) -> pd.DataFrame:
     return out[out["n"] > 0]
 
 
+def last_ts(con, market_id: str) -> pd.Timestamp | None:
+    """Timestamp of the newest cached bar for one market, or None when it has none."""
+    if not _is_duck(con):
+        from . import pg
+        return pg.last_ts(con, market_id)
+    row = con.execute("SELECT max(ts) FROM bars WHERE market_id = ?", [market_id]).fetchone()
+    return None if row is None or row[0] is None else pd.Timestamp(row[0]).tz_convert("UTC")
+
+
 def cached_markets(con) -> list[str]:
     if not _is_duck(con):
         from . import pg

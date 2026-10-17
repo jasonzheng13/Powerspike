@@ -45,6 +45,30 @@ def search_markets(query: str = "", limit: int = 20, active: bool = True) -> lis
     return out[:limit]
 
 
+def event_markets(slug: str) -> list[dict]:
+    """Every leg of one Gamma event (`/events?slug=`) with its YES token: for config/companies.yaml.
+
+    The by-volume listing behind `search_markets` never surfaces company contracts, but an event
+    slug from https://polymarket.com/event/<slug> does.
+    """
+    r = httpx.get(f"{GAMMA}/events", params={"slug": slug}, timeout=30)
+    r.raise_for_status()
+    out = []
+    for e in r.json():
+        for m in e.get("markets", []):
+            tokens = m.get("clobTokenIds")
+            tokens = json.loads(tokens) if isinstance(tokens, str) else tokens
+            prices = m.get("outcomePrices")
+            prices = json.loads(prices) if isinstance(prices, str) else prices
+            out.append({
+                "question": m.get("question"),
+                "token_id": (tokens or [None])[0],
+                "volume": float(m.get("volume") or 0),
+                "yes_price": float(prices[0]) if prices else None,
+            })
+    return out
+
+
 HISTORY_CHUNK_DAYS = 14  # live (2026-10-11): a longer 1-minute window is a 400; 30 days is rejected
 
 

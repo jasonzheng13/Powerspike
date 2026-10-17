@@ -31,3 +31,27 @@ def test_all_etfs_is_the_deduplicated_union_in_config_order():
     allt = expose.all_etfs()
     assert allt[:6] == ["TLT", "IEF", "HYG", "LQD", "KRE", "XLF"]
     assert len(allt) == len(set(allt)) and "SMH" in allt and "JNK" in allt
+
+
+# ---- companies.yaml (stock pivot) ------------------------------------------------------
+
+def test_companies_are_configured_with_well_formed_contracts():
+    cos = config.companies()
+    tickers = [c["ticker"] for c in cos]
+    assert "NVDA" in tickers and len(tickers) == len(set(tickers))
+    ids = []
+    for c in cos:
+        assert c["name"] and c["sector"] and c["news_query"], c["ticker"]
+        assert c["ticker"] == c["ticker"].upper()
+        for k in c["contracts"]:
+            assert k["venue"] == "polymarket" and k["id"].startswith("poly:"), k
+            assert k["event_sign"] in (-1, 1) and k["name"] and k["question"]
+            assert str(k["token_id"]).isdigit(), k["id"]  # a CLOB token id, not a slug
+            ids.append(k["id"])
+    assert len(ids) == len(set(ids))
+    assert config.company("NVDA")["contracts"], "NVDA needs a contract for the demo"
+
+
+def test_company_lookup_is_case_insensitive_and_none_when_unknown():
+    assert config.company("nvda")["ticker"] == "NVDA"
+    assert config.company("ZZZQ") is None
