@@ -1,31 +1,5 @@
-import type {
-  Alert,
-  AlertsResponse,
-  DetectorInputs,
-  EquitySeries,
-  Explanation,
-  Exposure,
-  LeadLag,
-  Market,
-  Series,
-  Store,
-} from "./types";
-
-export const DEFAULT_NEWS_QUERY = '"Federal Reserve" OR Powell';
-
-/** News search used for a market's "why" when the user hasn't typed an override. */
-const NEWS_QUERY_BY_EVENT: Record<string, string> = {
-  fed_rates: DEFAULT_NEWS_QUERY,
-  inflation: 'CPI OR inflation OR "consumer prices"',
-  tariffs: "tariffs OR tariff OR Canada trade",
-  recession: 'recession OR "jobs report" OR GDP',
-  shutdown: '"government shutdown" OR "spending bill"',
-  labor: '"jobs report" OR unemployment OR payrolls',
-};
-
-export function autoNewsQuery(eventType: string | undefined): string {
-  return (eventType && NEWS_QUERY_BY_EVENT[eventType]) || DEFAULT_NEWS_QUERY;
-}
+import type { Climate, Company, Days, Outlook, Spike, SpikesResponse, StockExplanation, StockSeries } from "./types";
+import { spikeKey } from "./lib/format";
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, init);
@@ -41,30 +15,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return (await r.json()) as T;
 }
 
-export function fetchMarkets(): Promise<Market[]> {
-  return request<{ markets: Market[] }>("/api/markets").then((r) => r.markets);
-}
-
-export function fetchStore(): Promise<Store> {
-  return request<Store>("/api/store");
-}
-
-export function fetchSeries(marketId: string, signal?: AbortSignal): Promise<Series> {
-  return request<Series>(`/api/markets/${encodeURIComponent(marketId)}/series`, { signal });
-}
-
-export function fetchAlerts(marketId: string, p: DetectorInputs, signal?: AbortSignal): Promise<AlertsResponse> {
-  const q = new URLSearchParams({
-    window: String(p.window),
-    score_threshold: String(p.score_threshold),
-    hold: String(p.hold),
-    vol_min_ratio: String(p.vol_min_ratio),
-  });
-  return request<AlertsResponse>(`/api/markets/${encodeURIComponent(marketId)}/alerts?${q}`, { signal });
-}
-
-// Explain and exposure are memoised per key so a card never refetches while the
-// replay clock ticks. The backend caches too; this just avoids the round trip.
+// Per-key promise memo so a card never refetches while the page re-renders; the backend caches too.
 const memo = new Map<string, Promise<unknown>>();
 
 function memoised<T>(key: string, load: () => Promise<T>): Promise<T> {
@@ -79,35 +30,35 @@ function memoised<T>(key: string, load: () => Promise<T>): Promise<T> {
   return p;
 }
 
-export function fetchExplanation(marketId: string, alert: Alert, query: string): Promise<Explanation> {
-  const key = `explain:${marketId}:${alert.kind}:${alert.peak}:${query}`;
-  return memoised(key, () =>
-    request<Explanation>("/api/explain", {
+const t = (ticker: string) => encodeURIComponent(ticker.toUpperCase());
+
+export function fetchCompanies(): Promise<Company[]> {
+  return memoised("companies", () => request<{ companies: Company[] }>("/api/companies").then((r) => r.companies));
+}
+
+export function fetchStock(ticker: string, days: Days, signal?: AbortSignal): Promise<StockSeries> {
+  return request<StockSeries>(`/api/stocks/${t(ticker)}?days=${days}`, { signal });
+}
+
+export function fetchSpikes(ticker: string, days: Days, signal?: AbortSignal): Promise<SpikesResponse> {
+  return request<SpikesResponse>(`/api/stocks/${t(ticker)}/spikes?days=${days}`, { signal });
+}
+
+/** The server explains its own copy of the spike; the body only identifies it. */
+export function fetchStockExplanation(ticker: string, days: Days, spike: Spike): Promise<StockExplanation> {
+  return memoised(`explain:${ticker}:${spikeKey(spike)}`, () =>
+    request<StockExplanation>(`/api/stocks/${t(ticker)}/explain?days=${days}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ market_id: marketId, spike: alert, query }),
+      body: JSON.stringify({ spike: { kind: spike.kind, peak: spike.peak } }),
     }),
   );
 }
 
-export function fetchExposure(eventType: string): Promise<Exposure> {
-  return memoised(`exposure:${eventType}`, () => request<Exposure>(`/api/exposure/${encodeURIComponent(eventType)}`));
+export function fetchClimate(): Promise<Climate> {
+  return memoised("climate", () => request<Climate>("/api/climate"));
 }
 
-export function fetchLeadLag(marketId: string, alert: Alert): Promise<LeadLag> {
-  const key = `leadlag:${marketId}:${alert.kind}:${alert.peak}`;
-  return memoised(key, () =>
-    request<LeadLag>("/api/leadlag", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ market_id: marketId, spike: alert }),
-    }),
-  );
-}
-
-export function fetchEquitySeries(marketId: string, ticker: string, signal?: AbortSignal): Promise<EquitySeries> {
-  return request<EquitySeries>(
-    `/api/markets/${encodeURIComponent(marketId)}/equities/${encodeURIComponent(ticker)}/series`,
-    { signal },
-  );
+export function fetchOutlook(ticker: string, days: Days, signal?: AbortSignal): Promise<Outlook> {
+  return request<Outlook>(`/api/stocks/${t(ticker)}/outlook?days=${days}`, { signal });
 }

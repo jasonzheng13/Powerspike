@@ -34,12 +34,13 @@ export interface ChartColors {
   muted: string;
   grid: string;
   axis: string;
-  series: string;
+  price: string;
   volume: string;
-  jump: string;
-  drift: string;
-  jumpWash: string;
-  driftWash: string;
+  contract: string;
+  up: string;
+  down: string;
+  upWash: string;
+  downWash: string;
 }
 
 export function chartColors(): ChartColors {
@@ -49,11 +50,12 @@ export function chartColors(): ChartColors {
     muted: token("--muted"),
     grid: token("--grid"),
     axis: token("--axis"),
-    series: token("--series-1"),
-    volume: token("--muted"),
-    jump: token("--status-critical"),
-    drift: token("--status-warning"),
-    jumpWash: token("--wash-jump"),
-    driftWash: token("--wash-drift"),
+    price: token("--ink"),
+    volume: token("--axis"),
+    contract: token("--contract"),
+    up: token("--up"),
+    down: token("--down"),
+    upWash: token("--wash-up"),
+    downWash: token("--wash-down"),
   };
 }

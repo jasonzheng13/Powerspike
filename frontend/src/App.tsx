@@ -1,394 +1,150 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { autoNewsQuery, fetchAlerts, fetchEquitySeries, fetchExposure, fetchLeadLag, fetchMarkets, fetchSeries, fetchStore } from "./api";
-import AlertCard from "./components/AlertCard";
-import EquityChart from "./components/EquityChart";
-import MarketChart from "./components/MarketChart";
-import ReplayControls from "./components/ReplayControls";
-import Sidebar from "./components/Sidebar";
-import { alertKey, bestTicker, clamp, fmtClock, revealed, visibleAlerts } from "./lib/replay";
-import { useMarketSummaries } from "./lib/summaries";
+import { fetchCompanies, fetchOutlook, fetchSpikes, fetchStock } from "./api";
+import ClimatePanel from "./components/ClimatePanel";
+import OutlookCard from "./components/OutlookCard";
+import SearchBar from "./components/SearchBar";
+import SpikeCard from "./components/SpikeCard";
+import StockChart from "./components/StockChart";
+import { fmtClock, spikeKey } from "./lib/format";
 import { applyTheme, initialTheme, type Theme } from "./lib/theme";
-import type { Alert, AlertsResponse, DetectorInputs, EquitySeries, LeadLag, Market, Series, Store } from "./types";
+import { parseQuery, syncUrl } from "./lib/url";
+import type { Company, Days, Outlook, SpikesResponse, StockSeries } from "./types";
 
-const DEFAULT_PARAMS: DetectorInputs = {
-  window: 15,
-  score_threshold: 4,
-  hold: 30,
-  vol_min_ratio: 2,
-};
-/** At 1x a full replay lasts this long, whatever the market's length; Nx plays N times faster. */
-const REPLAY_MS_AT_1X = 60_000;
-const SPEEDS = [1, 2, 5, 10];
-
-/** A lead/lag result that compares timing, as opposed to "no equity move" / "no data". */
-function hasVerdict(ll: LeadLag): boolean {
-  return ll.verdict !== "no equity move" && ll.verdict !== "no data";
-}
-
-/** Do any ETF bars fall inside the market series' window? */
-function overlaps(equity: EquitySeries, series: Series): boolean {
-  const lo = Date.parse(series.ts[0]!);
-  const hi = Date.parse(series.ts[series.ts.length - 1]!);
-  return equity.ts.some((t) => {
-    const ms = Date.parse(t);
-    return ms >= lo && ms <= hi;
-  });
-}
-
-/** `?market=<id>` makes a demo day linkable; falls back to the first cached market. */
-function marketFromUrl(): string {
-  return new URLSearchParams(window.location.search).get("market") ?? "";
-}
-
-function syncUrl(marketId: string): void {
-  const url = new URL(window.location.href);
-  url.searchParams.set("market", marketId);
-  window.history.replaceState(null, "", url);
-}
+const EXAMPLES = ["NVDA", "TSLA", "AAPL", "MSFT"];
 
 export default function App() {
   const [theme, setTheme] = useState<Theme>(initialTheme);
-  const [markets, setMarkets] = useState<Market[]>([]);
-  const [marketId, setMarketId] = useState<string>(marketFromUrl);
-  const [params, setParams] = useState<DetectorInputs>(DEFAULT_PARAMS);
-  const [newsOverride, setNewsOverride] = useState("");
-  const [speed, setSpeed] = useState(1);
+  const [companies, setCompanies] = useState<Company[]>([]);
+  const initial = useMemo(() => parseQuery(window.location.search), []);
+  const [ticker, setTicker] = useState(initial.ticker);
+  const [days, setDays] = useState<Days>(initial.days);
 
-  const summaries = useMarketSummaries(markets, params);
-  const [store, setStore] = useState<Store | null>(null);
-
-  const [series, setSeries] = useState<Series | null>(null);
-  const [alertsResp, setAlertsResp] = useState<AlertsResponse | null>(null);
+  const [stock, setStock] = useState<StockSeries | null>(null);
+  const [spikesResp, setSpikesResp] = useState<SpikesResponse | null>(null);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [explained, setExplained] = useState<Set<string>>(() => new Set());
+  const [outlook, setOutlook] = useState<Outlook | null>(null);
+  const [outlookError, setOutlookError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const [pos, setPos] = useState(0);
-  const [playing, setPlaying] = useState(false);
-  const [picked, setPicked] = useState<{
-    key: string;
-    at: { x: number; y: number };
-  } | null>(null);
-
-  // Lead/lag panel: the event type's ETFs, the one on screen, its bars, and each visible alert's result.
-  const [etfs, setEtfs] = useState<string[]>([]);
-  const [etf, setEtf] = useState<string>("");
-  const [etfPicked, setEtfPicked] = useState(false);
-  const [equity, setEquity] = useState<EquitySeries | null>(null);
-  const [equityNote, setEquityNote] = useState<string | null>(null);
-  const [leadlags, setLeadLags] = useState<Record<string, LeadLag>>({});
-
   useEffect(() => applyTheme(theme), [theme]);
-
-  // Markets once; real cached markets come first, the synthetic demo last.
   useEffect(() => {
-    fetchMarkets()
-      .then((ms) => {
-        setMarkets(ms);
-        setMarketId((cur) =>
-          ms.some((m) => m.id === cur) ? cur : (ms[0]?.id ?? ""),
-        );
-      })
-      .catch((e: Error) => setError(e.message));
+    fetchCompanies().then(setCompanies).catch(() => setCompanies([]));
   }, []);
 
-  // Where the bars live (Tiger Cloud or the local DuckDB file); shown in the sidebar status line.
+  // Bars and spikes on every search; everything downstream resets.
   useEffect(() => {
-    fetchStore().then(setStore).catch(() => setStore(null));
-  }, []);
-
-  // Series on market change; the clock rewinds to the end (everything visible).
-  useEffect(() => {
-    if (!marketId) return;
-    syncUrl(marketId);
+    syncUrl(ticker, days);
+    setStock(null);
+    setSpikesResp(null);
+    setSelectedKey(null);
+    setExplained(new Set());
+    setOutlook(null);
+    setOutlookError(null);
+    setError(null);
+    if (!ticker) return;
     const ctl = new AbortController();
-    setSeries(null);
-    setAlertsResp(null);
-    setPlaying(false);
-    setPicked(null);
-    fetchSeries(marketId, ctl.signal)
-      .then((s) => {
-        setSeries(s);
-        setPos(s.ts.length);
-        setError(null);
-      })
-      .catch((e: Error) => e.name !== "AbortError" && setError(e.message));
+    const quiet = (e: Error) => e.name !== "AbortError" && setError(e.message);
+    fetchStock(ticker, days, ctl.signal).then(setStock).catch(quiet);
+    fetchSpikes(ticker, days, ctl.signal).then(setSpikesResp).catch(quiet);
     return () => ctl.abort();
-  }, [marketId]);
+  }, [ticker, days]);
 
-  // Alerts whenever the detector sliders move (debounced).
+  // The outlook needs every spike's explanation; wait until the cards have fetched them so the
+  // slow call hits the server's memo instead of queueing behind the cards at the news index.
+  const spikes = useMemo(() => spikesResp?.spikes ?? [], [spikesResp]);
+  const allExplained = spikesResp !== null && spikes.every((s) => explained.has(spikeKey(s)));
   useEffect(() => {
-    if (!marketId) return;
+    if (!ticker || !allExplained || spikesResp?.ticker !== ticker) return;
     const ctl = new AbortController();
-    const t = setTimeout(() => {
-      fetchAlerts(marketId, params, ctl.signal)
-        .then(setAlertsResp)
-        .catch((e: Error) => e.name !== "AbortError" && setError(e.message));
-    }, 200);
-    return () => {
-      clearTimeout(t);
-      ctl.abort();
-    };
-  }, [marketId, params]);
-
-  // Replay clock.
-  const n = series?.ts.length ?? 0;
-  const baseline = alertsResp?.params.baseline ?? 240;
-  const minPos = Math.min(baseline, n);
-  useEffect(() => {
-    if (!playing || n === 0) return;
-    let raf = 0;
-    let last = performance.now();
-    const frame = (t: number) => {
-      const dt = t - last;
-      last = t;
-      setPos((p) =>
-        Math.min(n, p + ((n - minPos) / REPLAY_MS_AT_1X) * speed * dt),
-      );
-      raf = requestAnimationFrame(frame);
-    };
-    raf = requestAnimationFrame(frame);
-    return () => cancelAnimationFrame(raf);
-  }, [playing, speed, n, minPos]);
-  useEffect(() => {
-    if (playing && pos >= n) setPlaying(false);
-  }, [playing, pos, n]);
-
-  const market = markets.find((m) => m.id === marketId);
-  const autoQuery = autoNewsQuery(market?.event_type);
-  const newsQuery = newsOverride.trim() || autoQuery;
-  const startReplay = () => {
-    setPos(minPos);
-    setPlaying(true);
-  };
-  const now = series?.ts[Math.floor(clamp(pos, 1, n)) - 1];
-  const alerts = useMemo(
-    () => visibleAlerts(alertsResp?.alerts ?? [], now),
-    [alertsResp, now],
-  );
-
-  const selected = picked
-    ? alerts.find((a) => alertKey(a) === picked.key)
-    : undefined;
-
-  // The alert whose timing the ETF panel shows: the clicked one; else the latest visible alert with a
-  // revealed comparison verdict; else the latest with any revealed result; else the latest visible
-  // (its row reads "Watching ETFs…").
-  const revealedFor = (a: Alert): LeadLag | undefined => {
-    const ll = leadlags[alertKey(a)];
-    return ll !== undefined && revealed(ll.confirmed_at, now) ? ll : undefined;
-  };
-  const newestFirst = [...alerts].reverse();
-  const focusAlert =
-    selected ??
-    newestFirst.find((a) => {
-      const ll = revealedFor(a);
-      return ll !== undefined && hasVerdict(ll);
-    }) ??
-    newestFirst.find((a) => revealedFor(a) !== undefined) ??
-    alerts[alerts.length - 1];
-  const leadlag = focusAlert ? (leadlags[alertKey(focusAlert)] ?? null) : null;
-
-  // ETF list for the market's event type (memoised in api.ts); reset the pick on market change.
-  useEffect(() => {
-    if (!market) return;
-    let live = true;
-    setEtfPicked(false);
-    fetchExposure(market.event_type)
-      .then((x) => {
-        if (!live) return;
-        setEtfs(x.etfs);
-        setEtf((cur) => (x.etfs.includes(cur) ? cur : (x.etfs[0] ?? "")));
-      })
-      .catch((e: Error) => live && setEquityNote(e.message));
-    return () => {
-      live = false;
-    };
-  }, [market]);
-
-  // Lead/lag for every visible alert (a handful per market; the API caches per spike and api.ts
-  // memoises per alert). Keyed on the set of visible alert keys, not the array, so replay frames
-  // do not re-run it; guarded on the alerts belonging to the current market.
-  useEffect(() => setLeadLags({}), [marketId]);
-  const visibleKeys = useMemo(() => alerts.map(alertKey).join("|"), [alerts]);
-  useEffect(() => {
-    if (!market || alertsResp?.market_id !== market.id) return;
-    const pending = alerts.filter((a) => !leadlags[alertKey(a)]);
-    if (pending.length === 0) return;
-    let live = true;
-    for (const a of pending) {
-      const key = alertKey(a);
-      fetchLeadLag(market.id, a)
-        .then((r) => live && setLeadLags((cur) => (cur[key] ? cur : { ...cur, [key]: r })))
-        .catch(() => undefined);
-    }
-    return () => {
-      live = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [market, alertsResp, visibleKeys, leadlags]);
-
-  // Unless the user picked an ETF, follow the one that reacted most once a verdict is revealed. A
-  // lone reaction under "no equity move" is not followed: it is the false alarm the verdict guards against.
-  const leadlagRevealed = leadlag !== null && revealed(leadlag.confirmed_at, now);
-  useEffect(() => {
-    if (etfPicked || !leadlagRevealed || !leadlag || !hasVerdict(leadlag)) return;
-    setEtf((cur) => bestTicker(leadlag.reactions, cur));
-  }, [etfPicked, leadlagRevealed, leadlag]);
-
-  // The ETF's bars.
-  useEffect(() => {
-    if (!marketId || !etf) return;
-    const ctl = new AbortController();
-    setEquity(null);
-    setEquityNote(null);
-    fetchEquitySeries(marketId, etf, ctl.signal)
-      .then((s) => setEquity(s))
-      .catch((e: Error) => e.name !== "AbortError" && setEquityNote(e.message));
+    fetchOutlook(ticker, days, ctl.signal)
+      .then(setOutlook)
+      .catch((e: Error) => e.name !== "AbortError" && setOutlookError(e.message));
     return () => ctl.abort();
-  }, [marketId, etf]);
+  }, [ticker, days, allExplained, spikesResp]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setPicked(null);
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  const onExplained = useCallback((key: string) => setExplained((cur) => (cur.has(key) ? cur : new Set(cur).add(key))), []);
+  const newestFirst = useMemo(() => [...spikes].reverse(), [spikes]);
+  const pending = spikes.filter((s) => !explained.has(spikeKey(s))).length;
 
   return (
-    <div className="layout">
-      <Sidebar
-        markets={markets}
-        marketId={marketId}
-        onMarket={setMarketId}
-        params={params}
-        onParams={setParams}
-        newsQuery={newsOverride}
-        autoQuery={autoQuery}
-        onNewsQuery={setNewsOverride}
-        summaries={summaries}
-        store={store}
-      />
-      <main className="main">
-        <div className="header">
-          <span className="header-market">{market?.name ?? ""}</span>
-          <div className="header-actions">
-            <div className="replay-bar">
-              <button
-                className="btn primary"
-                onClick={startReplay}
-                disabled={playing}
-              >
-                ▶ Play
-              </button>
-              <button
-                className="btn"
-                onClick={() => setPlaying(false)}
-                disabled={!playing}
-              >
-                ⏹ Stop
-              </button>
-              <div
-                className="speed-pills"
-                role="group"
-                aria-label="Replay speed"
-              >
-                {SPEEDS.map((x) => (
-                  <button
-                    key={x}
-                    className={`pill${speed === x ? " on" : ""}`}
-                    onClick={() => setSpeed(x)}
-                  >
-                    {x}×
-                  </button>
-                ))}
-              </div>
-            </div>
-            <button
-              className="btn ghost"
-              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-            >
-              {theme === "dark" ? "☀ Light" : "☾ Dark"}
-            </button>
-          </div>
+    <div className="app">
+      <header className="top">
+        <div className="brand">
+          <h1>Powerspike</h1>
+          <p>Every spike in a tech stock, the news behind it, and whether the betting market moved first.</p>
         </div>
+        <SearchBar ticker={ticker} days={days} companies={companies} onSearch={setTicker} onDays={setDays} />
+        <button className="btn ghost" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} aria-label="Switch theme">
+          {theme === "dark" ? "Light" : "Dark"}
+        </button>
+      </header>
 
-        {error && <div className="panel status error">{error}</div>}
-        {!series && !error && (
-          <div className="panel status">Loading market…</div>
-        )}
+      {error && <div className="panel status error">{error}</div>}
 
-        {series && market && (
-          <>
-            <div className="chart-wrap">
-              <MarketChart
-                series={series}
-                pos={pos}
-                alerts={alerts}
-                theme={theme}
-                onAlertClick={(a, at) => setPicked({ key: alertKey(a), at })}
-              />
-              {selected && picked && (
-                <div
-                  className="popover"
-                  style={{
-                    left: `clamp(236px, ${picked.at.x}px, calc(100% - 236px))`,
-                    top: picked.at.y,
-                  }}
-                >
-                  <AlertCard
-                    alert={selected}
-                    market={market}
-                    newsQuery={newsQuery}
-                    now={now}
-                    onClose={() => setPicked(null)}
-                  />
-                </div>
-              )}
-            </div>
-            <ReplayControls
-              pos={Math.floor(pos)}
-              min={minPos}
-              max={n}
-              playing={playing}
-              onPlay={startReplay}
-              onStop={() => setPlaying(false)}
-              onSeek={(p) => {
-                setPlaying(false);
-                setPos(p);
-              }}
+      {!ticker && !error && (
+        <section className="panel empty">
+          <h2>Pick a stock to start</h2>
+          <p>
+            Powerspike pulls the last {days} days of one-minute prices, marks the moves that were big, backed by volume and
+            held, reads the news around each one, and checks whether the Polymarket contract on the company repriced before
+            the stock did. Then it says whether the current AI news climate reads bullish or bearish for that stock.
+          </p>
+          <div className="chips">
+            {EXAMPLES.map((t) => (
+              <button type="button" className="chip pick" key={t} onClick={() => setTicker(t)}>
+                {t}
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {ticker && !stock && !error && <div className="panel status">Loading {ticker}: first visits pull a month of bars…</div>}
+
+      {ticker && stock && (
+        <>
+          <p className="caption">
+            {stock.name}
+            {stock.sector ? `, ${stock.sector}` : ""}. Bars to {fmtClock(stock.as_of)} UTC.
+            {spikesResp ? ` ${spikes.length} spike${spikes.length === 1 ? "" : "s"} in ${days} days.` : " Running the detector…"}
+            {!stock.contract && " No liquid Polymarket contract on this company, so timing against the odds is off."}
+          </p>
+          <div className="grid">
+            <StockChart
+              stock={stock}
+              spikes={spikes}
+              selectedKey={selectedKey}
+              theme={theme}
+              onSpikeClick={(s) => setSelectedKey(spikeKey(s))}
             />
-            <div className="caption">
-              Replay clock: {now ? fmtClock(now) : "—"} UTC · {alerts.length}{" "}
-              alert(s) so far
-              {alertsResp === null && " · running detector…"}
-            </div>
-            {equity && series.ts.length > 0 && overlaps(equity, series) ? (
-              <EquityChart
-                series={equity}
-                now={now}
-                range={[series.ts[0]!, series.ts[series.ts.length - 1]!]}
-                tickers={etfs}
-                ticker={etf}
-                onTicker={(t) => {
-                  setEtfPicked(true);
-                  setEtf(t);
-                }}
-                focus={focusAlert ? { alert: focusAlert, leadlag, revealed: leadlagRevealed } : undefined}
-                theme={theme}
-              />
-            ) : (
-              <div className="caption">
-                {equityNote
-                  ? `ETF panel: ${equityNote}`
-                  : equity
-                    ? `ETF panel: no ${etf} bars cached for this window (run scripts/pull_data.py)`
-                    : etf
-                      ? `Loading ${etf}…`
-                      : "ETF panel: no exposure configured for this market"}
-              </div>
-            )}
-          </>
-        )}
-      </main>
+            <OutlookCard outlook={outlook} loading={allExplained} error={outlookError} pending={pending} />
+          </div>
+          <div className="grid">
+            <section className="spikes" aria-label="Spikes">
+              <h2>Spikes, newest first</h2>
+              {spikesResp && spikes.length === 0 && (
+                <p className="muted">
+                  Nothing in the last {days} days was big, volume-backed and sticky enough to count. Try 30 days or another ticker.
+                </p>
+              )}
+              {newestFirst.map((s) => (
+                <SpikeCard
+                  key={spikeKey(s)}
+                  ticker={ticker}
+                  days={days}
+                  spike={s}
+                  selected={selectedKey === spikeKey(s)}
+                  onSelect={() => setSelectedKey((cur) => (cur === spikeKey(s) ? null : spikeKey(s)))}
+                  onExplained={onExplained}
+                />
+              ))}
+            </section>
+            <ClimatePanel />
+          </div>
+        </>
+      )}
     </div>
   );
 }
