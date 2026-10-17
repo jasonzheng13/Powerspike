@@ -30,24 +30,38 @@ from .detect import Spike
 
 GDELT = "https://api.gdeltproject.org/api/v2/doc/doc"
 GDELT_MIN_INTERVAL = 5.5  # GDELT answers 429 to more than one request per 5 s
-_gdelt_last_call = 0.0
+GDELT_MAX_WAIT = 120.0    # a caller whose turn is further away than this gets no headlines instead of queueing
+_gdelt_next_slot = 0.0    # monotonic time of the next free request slot
 # FastAPI runs sync routes in a threadpool, so several spike cards can ask for headlines at once;
-# without the lock they all see the same `_gdelt_last_call`, fire together and all get 429.
+# each caller reserves the next free slot under a short lock, then sleeps and requests outside it.
 _gdelt_lock = threading.Lock()
 
 
-def _gdelt_get(params: dict) -> httpx.Response:
-    """GET GDELT no faster than its rate limit allows (serialised across threads), retrying once on a 429."""
-    global _gdelt_last_call
+class GdeltBusy(Exception):
+    """The request queue is longer than `GDELT_MAX_WAIT`."""
+
+
+def _reserve_slot() -> float:
+    """Claim the next request slot (monotonic seconds); raises GdeltBusy when it is too far away."""
+    global _gdelt_next_slot
     with _gdelt_lock:
-        for attempt in range(2):
-            wait = _gdelt_last_call + GDELT_MIN_INTERVAL - time.monotonic()
-            if wait > 0:
-                time.sleep(wait)
-            r = httpx.get(GDELT, params=params, timeout=20)
-            _gdelt_last_call = time.monotonic()
-            if r.status_code != 429:
-                break
+        now = time.monotonic()
+        slot = max(now, _gdelt_next_slot)
+        if slot - now > GDELT_MAX_WAIT:
+            raise GdeltBusy()
+        _gdelt_next_slot = slot + GDELT_MIN_INTERVAL
+    return slot
+
+
+def _gdelt_get(params: dict) -> httpx.Response:
+    """GET GDELT no faster than its rate limit allows (slots are spaced across threads), retrying once on a 429."""
+    for attempt in range(2):
+        wait = _reserve_slot() - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        r = httpx.get(GDELT, params=params, timeout=20)
+        if r.status_code != 429:
+            break
     return r
 
 
@@ -62,7 +76,7 @@ def headlines(query: str, start: pd.Timestamp, end: pd.Timestamp, limit: int = 1
         r = _gdelt_get(params)
         r.raise_for_status()
         arts = r.json().get("articles", [])
-    except (httpx.HTTPError, ValueError):
+    except (httpx.HTTPError, ValueError, GdeltBusy):
         return []
     return [{k: a.get(k) for k in ("title", "url", "domain", "seendate")} for a in arts]
 

@@ -78,7 +78,7 @@ def test_generate_returns_none_without_a_key(monkeypatch):
 
 def test_gdelt_calls_from_two_threads_are_spaced_by_the_interval(monkeypatch):
     monkeypatch.setattr(explain, "GDELT_MIN_INTERVAL", 0.3)
-    monkeypatch.setattr(explain, "_gdelt_last_call", 0.0)
+    monkeypatch.setattr(explain, "_gdelt_next_slot", 0.0)
     seen = []
 
     def fake_get(url, params=None, timeout=None):
@@ -93,3 +93,19 @@ def test_gdelt_calls_from_two_threads_are_spaced_by_the_interval(monkeypatch):
         t.join()
     gaps = sorted(b - a for a, b in zip(sorted(seen), sorted(seen)[1:]))
     assert len(seen) == 3 and gaps[0] >= 0.29
+
+
+def test_gdelt_caller_gives_up_instead_of_queueing_past_the_cap(monkeypatch):
+    monkeypatch.setattr(explain, "GDELT_MIN_INTERVAL", 5.0)
+    monkeypatch.setattr(explain, "GDELT_MAX_WAIT", 1.0)
+    monkeypatch.setattr(explain, "_gdelt_next_slot", 0.0)
+    calls = []
+
+    def fake_get(url, params=None, timeout=None):
+        calls.append(params)
+        return httpx.Response(200, json={"articles": [{"title": "t", "url": "u", "domain": "d", "seendate": "s"}]}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(explain.httpx, "get", fake_get)
+    assert explain.headlines("q", T, T) == [{"title": "t", "url": "u", "domain": "d", "seendate": "s"}]
+    assert explain.headlines("q", T, T) == []        # next slot is 5 s away, more than the 1 s cap
+    assert len(calls) == 1
