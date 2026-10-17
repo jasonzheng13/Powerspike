@@ -69,10 +69,14 @@ Contracts that hold the pipeline together:
 2. **On demand, with freshness tokens.** Nothing is pulled ahead of time. `stocks.refresh(con, ticker,
    days, now)` pulls what is missing (no bars; the window's first 5 days absent, tried once per
    process) or stale (in session: last bar older than 1 h; otherwise older than the last close), and
-   returns the newest bar's timestamp. `api.py` keys every `lru_cache` on that token (`_bars`,
-   `_spikes`, `_reactions`, `_outlook`) so a re-pull shows up without a restart; contracts have their
-   own token from `ensure_contract` (1 h staleness). An unknown ticker (yfinance returns nothing) is a
-   404; a transport error is a 503. `stocks.company()` merges `companies.yaml` with a yfinance short
+   returns the newest bar's timestamp. Pulls are serialised **per series** (`stocks._lock`): the
+   frontend asks for bars and spikes at once and two threads pulling the same ticker raced on the
+   cache's primary key (a 503 on first visit) before the lock; `cache.connect` guards its
+   `CREATE TABLE` the same way. A head pull is marked done (`_heads_pulled`) only after it succeeds.
+   `api.py` keys every `lru_cache` on that token (`_bars`, `_spikes`, `_reactions`, `_outlook`) so a
+   re-pull shows up without a restart; contracts have their own token from `ensure_contract` (1 h
+   staleness). The ticker path is validated server-side (`SYMBOL`, 422); an unknown ticker (yfinance
+   returns nothing) is a 404; a transport error is a 503. `stocks.company()` merges `companies.yaml` with a yfinance short
    name for unconfigured tickers (`company_name`, slow, cached per process).
 3. **`Spike` with `unit`.** `detect.detect_jumps()` returns `Spike` objects; `unit` is `"usd"` in log
    space and `"prob"` in log-odds, and `headline()` formats accordingly (`$182.10 → $171.40 across the
@@ -132,7 +136,8 @@ both ways for an in-session onset); lag is wall-clock minutes from the onset to 
 - **GDELT, live-tested 2026-10-17:** OR'd terms must be inside parentheses (`gdelt_query()` wraps a
   bare `a OR b`; `companies.yaml` queries are written wrapped), adjacent groups are ANDed (no `AND`
   keyword), `sourcelang:english` is appended, responses take 7–9 s, and it answers 429 to requests
-  closer than ~15 s even though it says 5. `_gdelt_get` reserves spaced slots under a short lock
+  closer than ~15 s even though it says 5; after a burst it refused four of five requests spaced
+  25 s apart, so there is a penalty window of unknown length. `_gdelt_get` reserves spaced slots under a short lock
   (`GDELT_MIN_INTERVAL` 15 s, measured from the previous *response*), retries a 429 up to
   `GDELT_RETRIES` (3) times, logs refusals (`powerspike.explain` logger), and `headlines()` returns `[]`
   past `GDELT_MAX_WAIT` (120 s of queue) or on any error. The stock news window is
@@ -160,8 +165,12 @@ Routes: `GET /api/companies` (companies.yaml minus token ids), `GET /api/stocks/
 are `null`, never 500), `GET /api/stocks/{t}/spikes?days` (`{params, spikes: [spike +
 contract_leadlag | null]}`), `POST /api/stocks/{t}/explain?days {spike: {kind, peak}}`,
 `GET /api/climate` (30-minute bucket cache), `GET /api/stocks/{t}/outlook?days` (needs every spike's
-explanation: sequential GDELT calls on a miss; cached per token/ctoken/bucket). Explanations are
-memoised in a bounded LRU keyed on the spike's identity (`_explain_memo`), not its JSON. `days` must
+explanation: sequential GDELT calls on a miss; cached per token/contract id/ctoken/bucket).
+Explanations are memoised in a bounded LRU keyed on the spike's identity (`_explain_memo`), not its
+JSON, and **only when the GDELT fetch succeeded** (`explain.fetch_headlines` returns None on a
+failure; `headlines` wraps it as `[]` for the macro callers). `_live_contract` picks the first
+configured contract whose `closes:` date has not passed and whose window is not entirely in a tail
+(a settled contract is a flat 0/100% line that would read as a +18 pt "trend"). `days` must
 be 7 or 30 (400 otherwise). If `frontend/dist` exists at import time the API mounts it at `/`.
 
 Frontend: `App.tsx` owns `ticker`/`days` (synced to `?t=&days=` via `lib/url.ts`), the stock and
@@ -181,7 +190,9 @@ color). Colors are CSS tokens read by `lib/theme.ts`: price in ink, `--contract`
 `backend/config/companies.yaml`: per ticker `name`, `sector`, `news_query` (parenthesised GDELT
 query) and `contracts` (first one is shown and scored): `id` (`poly:<slug>`), `venue`, `name`,
 `question`, `token_id` (the YES outcome's CLOB token from Gamma `clobTokenIds[0]`, resolved with
-`find_markets.py --event-slug`; never a slug), `event_sign` (+1 when YES is good for the stock).
+`find_markets.py --event-slug`; never a slug), `event_sign` (+1 when YES is good for the stock),
+`closes` (settlement date; required by `test_config_signs`, skipped once past). MSFT's shown ladder
+settles 2026-10-19 and TSLA's 2026-10-30: add a fresh leg when they roll.
 `config.companies()` / `config.company()` are `lru_cache`d like `markets()`: a YAML edit needs a
 restart. `.env` is read from the repo root first, then `backend/`; env vars resolve as
 `os.getenv(x) or default`.
