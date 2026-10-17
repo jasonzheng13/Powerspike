@@ -103,15 +103,19 @@ def score(sens: dict[str, float], climate_themes: list[dict], contract_trend: fl
     p = params or OutlookParams()
     drivers: list[Driver] = []
     total = 0.0
+    unscored: list[str] = []
     for t in climate_themes:
         theme, d, w = t.get("theme"), DIRECTION_SIGN.get(t.get("direction"), 0), float(t.get("weight") or 0)
         if theme not in sens:
-            drivers.append(Driver("coverage", f"No past spike tagged '{theme}', so this week's {theme} news is unscored.", 0.0))
+            unscored.append(str(theme))
             continue
         contribution = d * w * abs(sens[theme])
         total += contribution
         drivers.append(Driver("theme", f"Historically moved {sens[theme]:+.1%} on {theme} spikes; the current {theme} "
                                        f"news reads {t.get('direction')} (weight {w:.1f}).", contribution))
+    if unscored:
+        names = ", ".join(unscored[:-1]) + (" or " if len(unscored) > 1 else "") + unscored[-1]
+        drivers.append(Driver("coverage", f"No past spike was tagged {names}, so this week's news on that is unscored.", 0.0))
     if contract_trend is not None:
         share = 0.0 if contract_led_share is None else float(contract_led_share)
         contribution = p.contract_scale * math.tanh(contract_trend / p.contract_trend_pts_for_full) * (0.5 + 0.5 * share)

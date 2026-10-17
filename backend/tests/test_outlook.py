@@ -111,3 +111,11 @@ def test_contract_driver_counts_the_spikes_it_actually_moved_on():
     text = next(d.text for d in o.drivers if d.kind == "contract")
     assert "1 of the 5 spikes" in text or "1 of 5" in text
     assert "100%" not in text
+
+
+def test_unscored_themes_are_one_coverage_driver():
+    themes = [{"theme": t, "direction": "bearish", "weight": 0.25} for t in ("macro", "capex", "product", "regulation")]
+    o = outlook.score({"earnings": 0.02}, themes, None, None, n_spikes=4)
+    coverage = [d for d in o.drivers if d.kind == "coverage"]
+    assert len(coverage) == 1
+    assert all(t in coverage[0].text for t in ("macro", "capex", "product", "regulation"))

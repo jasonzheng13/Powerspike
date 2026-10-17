@@ -125,7 +125,8 @@ def test_gdelt_or_queries_are_parenthesised(monkeypatch):
     explain.headlines("(Nvidia OR NVDA)", T, T)
     explain.headlines("Nvidia", T, T)
     explain.headlines('("artificial intelligence" OR OpenAI) (stocks OR shares)', T, T)
-    assert sent == ['("Nvidia" OR NVDA)', "(Nvidia OR NVDA)", "Nvidia", '("artificial intelligence" OR OpenAI) (stocks OR shares)']
+    assert sent == ['("Nvidia" OR NVDA) sourcelang:english', "(Nvidia OR NVDA) sourcelang:english", "Nvidia sourcelang:english",
+                    '("artificial intelligence" OR OpenAI) (stocks OR shares) sourcelang:english']
     assert " AND " not in explain.AI_CLIMATE_QUERY and explain.AI_CLIMATE_QUERY.startswith("(")
 
 

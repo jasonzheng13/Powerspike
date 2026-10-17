@@ -30,7 +30,7 @@ from .config import GEMINI_MODEL
 from .detect import Spike
 
 GDELT = "https://api.gdeltproject.org/api/v2/doc/doc"
-GDELT_MIN_INTERVAL = 10.0  # GDELT says one request per 5 s, but live it still answers 429 at 7 s spacing (2026-10-17)
+GDELT_MIN_INTERVAL = 15.0  # GDELT says one request per 5 s, but live it answered 429 to two in three requests at 10 s (2026-10-17)
 GDELT_RETRIES = 3
 log = logging.getLogger("powerspike.explain")
 GDELT_MAX_WAIT = 120.0    # a caller whose turn is further away than this gets no headlines instead of queueing
@@ -79,11 +79,13 @@ def _gdelt_get(params: dict) -> httpx.Response:
     return r
 
 
-def gdelt_query(query: str) -> str:
-    """GDELT rejects OR'd terms that are not inside parentheses; wrap a bare `a OR b` once."""
+def gdelt_query(query: str, english: bool = True) -> str:
+    """GDELT rejects OR'd terms that are not inside parentheses; wrap a bare `a OR b` once, and keep to English sources."""
     q = query.strip()
     if " OR " in q and not q.startswith("("):
-        return f"({q})"
+        q = f"({q})"
+    if english and "sourcelang:" not in q:
+        q = f"{q} sourcelang:english"
     return q
 
 
@@ -109,7 +111,7 @@ def news_window(spike: Spike, before_min: int = 60, after_min: int = 30) -> tupl
     return spike.start - pd.Timedelta(minutes=before_min), spike.peak + pd.Timedelta(minutes=after_min)
 
 
-STOCK_NEWS_BEFORE_MIN = 120  # a stock reacts to news that has been out a while; 60 min came back empty on live probes
+STOCK_NEWS_BEFORE_MIN = 240  # a stock reacts to news that has been out a while; 60-120 min came back empty on live probes
 
 
 PROMPT = """You are writing one line on an alert card for a credit analyst.
