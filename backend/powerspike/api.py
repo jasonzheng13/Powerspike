@@ -26,7 +26,7 @@ from pydantic import BaseModel
 
 from . import config, leadlag, outlook, stocks
 from .detect import EQUITY_PARAMS, Spike, detect_jumps
-from .explain import AI_CLIMATE_QUERY, CLIMATE_HOURS, climate, explain_stock, headlines, news_window
+from .explain import AI_CLIMATE_QUERY, CLIMATE_HOURS, STOCK_NEWS_BEFORE_MIN, climate, explain_stock, headlines, news_window
 from .ingest import cache
 from .ingest.equities import equity_id
 
@@ -150,7 +150,7 @@ def _explanation(ticker: str, s: Spike) -> dict:
     if hit is not None:
         _explain_memo.move_to_end(key)
         return hit
-    start, end = news_window(s)
+    start, end = news_window(s, before_min=STOCK_NEWS_BEFORE_MIN)
     heads = headlines(company["news_query"], start, end)
     out = {**explain_stock(s, company, heads), "headlines": heads}
     _explain_memo[key] = out

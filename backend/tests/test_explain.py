@@ -146,3 +146,18 @@ def test_gdelt_spacing_is_measured_from_the_previous_response(monkeypatch):
     explain.headlines("b", T, T)
     first_end, second_start = log[1][1], log[2][1]
     assert second_start - first_end >= 0.29
+
+
+def test_gdelt_retries_a_429_up_to_three_times(monkeypatch):
+    assert explain.GDELT_RETRIES == 3 and explain.GDELT_MIN_INTERVAL >= 10   # live: 429s at 7 s spacing
+    monkeypatch.setattr(explain, "GDELT_MIN_INTERVAL", 0.0)
+    monkeypatch.setattr(explain, "_gdelt_next_slot", 0.0)
+    replies = iter([429, 429, 200])
+
+    def fake_get(url, params=None, timeout=None):
+        code = next(replies)
+        body = {"articles": [{"title": "t", "url": "u", "domain": "d", "seendate": "s"}]} if code == 200 else None
+        return httpx.Response(code, json=body, text=None if body else "slow down", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(explain.httpx, "get", fake_get)
+    assert explain.headlines("q", T, T) == [{"title": "t", "url": "u", "domain": "d", "seendate": "s"}]

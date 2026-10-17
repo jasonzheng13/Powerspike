@@ -17,6 +17,7 @@ dashboard always renders.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import threading
@@ -29,7 +30,9 @@ from .config import GEMINI_MODEL
 from .detect import Spike
 
 GDELT = "https://api.gdeltproject.org/api/v2/doc/doc"
-GDELT_MIN_INTERVAL = 5.5  # GDELT answers 429 to more than one request per 5 s
+GDELT_MIN_INTERVAL = 10.0  # GDELT says one request per 5 s, but live it still answers 429 at 7 s spacing (2026-10-17)
+GDELT_RETRIES = 3
+log = logging.getLogger("powerspike.explain")
 GDELT_MAX_WAIT = 120.0    # a caller whose turn is further away than this gets no headlines instead of queueing
 _gdelt_next_slot = 0.0    # monotonic time of the next free request slot
 # FastAPI runs sync routes in a threadpool, so several spike cards can ask for headlines at once;
@@ -62,16 +65,17 @@ def _release_slot() -> None:
 
 def _gdelt_get(params: dict) -> httpx.Response:
     """GET GDELT no faster than its rate limit allows (slots are spaced across threads), retrying once on a 429."""
-    for attempt in range(2):
+    for attempt in range(GDELT_RETRIES):
         wait = _reserve_slot() - time.monotonic()
         if wait > 0:
             time.sleep(wait)
         try:
-            r = httpx.get(GDELT, params=params, timeout=20)
+            r = httpx.get(GDELT, params=params, timeout=30)
         finally:
             _release_slot()
         if r.status_code != 429:
             break
+        log.warning("GDELT 429 (attempt %d/%d) for %r", attempt + 1, GDELT_RETRIES, params.get("query"))
     return r
 
 
@@ -94,13 +98,18 @@ def headlines(query: str, start: pd.Timestamp, end: pd.Timestamp, limit: int = 1
         r = _gdelt_get(params)
         r.raise_for_status()
         arts = r.json().get("articles", [])
-    except (httpx.HTTPError, ValueError, GdeltBusy):
+    except (httpx.HTTPError, ValueError, GdeltBusy) as e:
+        # A malformed query comes back as 200 + plain text, which is the ValueError branch.
+        log.warning("GDELT gave no articles for %r: %s: %s", query, type(e).__name__, str(e)[:120])
         return []
     return [{k: a.get(k) for k in ("title", "url", "domain", "seendate")} for a in arts]
 
 
 def news_window(spike: Spike, before_min: int = 60, after_min: int = 30) -> tuple[pd.Timestamp, pd.Timestamp]:
     return spike.start - pd.Timedelta(minutes=before_min), spike.peak + pd.Timedelta(minutes=after_min)
+
+
+STOCK_NEWS_BEFORE_MIN = 120  # a stock reacts to news that has been out a while; 60 min came back empty on live probes
 
 
 PROMPT = """You are writing one line on an alert card for a credit analyst.
