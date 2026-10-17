@@ -201,8 +201,9 @@ def _outlook(ticker: str, days: int, token: str, ctoken: str | None, bucket: int
             contract_info = {**sig, "led_share": led_share, "id": c["id"], "name": c["name"]}
     last = pd.Timestamp(token)
     quiet = not any(s.peak >= last - pd.Timedelta(hours=24) for s in spikes)
+    reacted_n = sum(1 for r in reactions if r and r["status"] == "reacted") if c is not None and ctoken else None
     o = outlook.score(outlook.sensitivity(pairs), clim["themes"], trend, led_share, contract_move_24h=move_24h,
-                      stock_quiet_24h=quiet, n_spikes=len(spikes))
+                      stock_quiet_24h=quiet, n_spikes=len(spikes), reacted_n=reacted_n)
     return {
         "ticker": ticker, "name": company["name"], "label": o.label, "confidence": o.confidence, "score": o.score,
         "n_spikes": o.n_spikes, "drivers": [asdict(d) for d in o.drivers], "prose": outlook.prose(o, company["name"]),

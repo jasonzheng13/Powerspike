@@ -53,23 +53,41 @@ def _reserve_slot() -> float:
     return slot
 
 
+def _release_slot() -> None:
+    """GDELT counts its 5 s from the previous *response* (which itself takes 7-9 s), so push the next slot out."""
+    global _gdelt_next_slot
+    with _gdelt_lock:
+        _gdelt_next_slot = max(_gdelt_next_slot, time.monotonic() + GDELT_MIN_INTERVAL)
+
+
 def _gdelt_get(params: dict) -> httpx.Response:
     """GET GDELT no faster than its rate limit allows (slots are spaced across threads), retrying once on a 429."""
     for attempt in range(2):
         wait = _reserve_slot() - time.monotonic()
         if wait > 0:
             time.sleep(wait)
-        r = httpx.get(GDELT, params=params, timeout=20)
+        try:
+            r = httpx.get(GDELT, params=params, timeout=20)
+        finally:
+            _release_slot()
         if r.status_code != 429:
             break
     return r
+
+
+def gdelt_query(query: str) -> str:
+    """GDELT rejects OR'd terms that are not inside parentheses; wrap a bare `a OR b` once."""
+    q = query.strip()
+    if " OR " in q and not q.startswith("("):
+        return f"({q})"
+    return q
 
 
 def headlines(query: str, start: pd.Timestamp, end: pd.Timestamp, limit: int = 15) -> list[dict]:
     """Articles matching `query` published in [start, end]. Returns [{title, url, domain, seendate}]."""
     fmt = "%Y%m%d%H%M%S"
     params = {
-        "query": query, "mode": "artlist", "format": "json", "sort": "datedesc",
+        "query": gdelt_query(query), "mode": "artlist", "format": "json", "sort": "datedesc",
         "startdatetime": start.strftime(fmt), "enddatetime": end.strftime(fmt), "maxrecords": limit,
     }
     try:
@@ -137,7 +155,8 @@ def explain(spike: Spike, market_name: str, heads: list[dict], direction_note: s
 THEMES = ("AI model release", "capex", "chip export rules", "earnings", "macro", "regulation", "product", "other")
 SENTIMENTS = ("positive", "negative", "mixed")
 DIRECTIONS = ("bullish", "bearish", "mixed")
-AI_CLIMATE_QUERY = '("artificial intelligence" OR OpenAI OR Nvidia OR Anthropic OR "AI model") AND (stocks OR shares OR Nasdaq)'
+# GDELT: OR groups must be parenthesised and adjacent groups are ANDed (there is no AND keyword).
+AI_CLIMATE_QUERY = '("artificial intelligence" OR OpenAI OR Nvidia OR Anthropic OR "AI model") (stocks OR shares OR Nasdaq)'
 CLIMATE_HOURS = 72
 
 STOCK_PROMPT = """You are annotating one price spike on a stock dashboard.

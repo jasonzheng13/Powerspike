@@ -111,7 +111,7 @@ def test_explain_is_memoised_per_spike(env):
     spike = client.get("/api/stocks/NVDA/spikes").json()["spikes"][0]
     r = client.post("/api/stocks/NVDA/explain", json={"spike": spike}).json()
     assert r["theme"] == "AI model release" and r["ai_related"] is True and r["headlines"][0]["title"]
-    assert news == ['"Nvidia" OR NVDA']
+    assert news == ['("Nvidia" OR NVDA)']
     echoed = json.loads(json.dumps(spike))
     echoed["p_before"] = round(echoed["p_before"])   # a client may re-serialise numbers; the key is the spike's identity
     client.post("/api/stocks/NVDA/explain", json={"spike": echoed})
@@ -136,7 +136,7 @@ def test_outlook_reuses_explanations_and_scores_the_contract(env):
     assert r["n_spikes"] == 1 and r["prose"] == "Model prose." and "Not investment advice" in r["disclaimer"]
     assert r["climate_summary"] and r["contract"]["led_share"] == 1.0 and "trend_7d_pts" in r["contract"]
     assert any(d["kind"] == "theme" for d in r["drivers"])
-    assert sorted(news) == sorted(['"Nvidia" OR NVDA', api.AI_CLIMATE_QUERY])   # the spike explanation was reused
+    assert sorted(news) == sorted(['("Nvidia" OR NVDA)', api.AI_CLIMATE_QUERY])   # the spike explanation was reused
 
 
 def test_stale_cache_is_repulled_without_a_restart(env):

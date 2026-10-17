@@ -103,7 +103,7 @@ def company(ticker: str) -> dict:
     if c:
         return {**c, "configured": True}
     name = company_name(t)
-    return {"ticker": t, "name": name, "sector": None, "news_query": f'"{name}" OR {t}', "contracts": [], "configured": False}
+    return {"ticker": t, "name": name, "sector": None, "news_query": f'("{name}" OR {t})', "contracts": [], "configured": False}
 
 
 def _pull_contract(con, contract: dict, start: pd.Timestamp, end: pd.Timestamp) -> None:

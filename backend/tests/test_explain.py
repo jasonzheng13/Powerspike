@@ -109,3 +109,40 @@ def test_gdelt_caller_gives_up_instead_of_queueing_past_the_cap(monkeypatch):
     assert explain.headlines("q", T, T) == [{"title": "t", "url": "u", "domain": "d", "seendate": "s"}]
     assert explain.headlines("q", T, T) == []        # next slot is 5 s away, more than the 1 s cap
     assert len(calls) == 1
+
+
+def test_gdelt_or_queries_are_parenthesised(monkeypatch):
+    monkeypatch.setattr(explain, "GDELT_MIN_INTERVAL", 0.0)
+    monkeypatch.setattr(explain, "_gdelt_next_slot", 0.0)
+    sent = []
+
+    def fake_get(url, params=None, timeout=None):
+        sent.append(params["query"])
+        return httpx.Response(200, json={"articles": []}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(explain.httpx, "get", fake_get)
+    explain.headlines('"Nvidia" OR NVDA', T, T)
+    explain.headlines("(Nvidia OR NVDA)", T, T)
+    explain.headlines("Nvidia", T, T)
+    explain.headlines('("artificial intelligence" OR OpenAI) (stocks OR shares)', T, T)
+    assert sent == ['("Nvidia" OR NVDA)', "(Nvidia OR NVDA)", "Nvidia", '("artificial intelligence" OR OpenAI) (stocks OR shares)']
+    assert " AND " not in explain.AI_CLIMATE_QUERY and explain.AI_CLIMATE_QUERY.startswith("(")
+
+
+def test_gdelt_spacing_is_measured_from_the_previous_response(monkeypatch):
+    # GDELT answers slowly; the next request must wait the interval after the previous one *returned*.
+    monkeypatch.setattr(explain, "GDELT_MIN_INTERVAL", 0.3)
+    monkeypatch.setattr(explain, "_gdelt_next_slot", 0.0)
+    log = []
+
+    def slow_get(url, params=None, timeout=None):
+        log.append(("start", time.monotonic()))
+        time.sleep(0.2)
+        log.append(("end", time.monotonic()))
+        return httpx.Response(200, json={"articles": []}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(explain.httpx, "get", slow_get)
+    explain.headlines("a", T, T)
+    explain.headlines("b", T, T)
+    first_end, second_start = log[1][1], log[2][1]
+    assert second_start - first_end >= 0.29

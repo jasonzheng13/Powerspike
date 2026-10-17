@@ -104,3 +104,10 @@ def test_prose_falls_back_to_a_deterministic_template(monkeypatch):
     monkeypatch.setattr(explain, "_generate", lambda prompt: "Model prose.")
     assert outlook.prose(o, "Nvidia") == "Model prose."
     assert "not investment advice" in outlook.DISCLAIMER.lower()
+
+
+def test_contract_driver_counts_the_spikes_it_actually_moved_on():
+    o = outlook.score({}, [], 10.0, 1.0, n_spikes=5, reacted_n=1)
+    text = next(d.text for d in o.drivers if d.kind == "contract")
+    assert "1 of the 5 spikes" in text or "1 of 5" in text
+    assert "100%" not in text

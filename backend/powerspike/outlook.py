@@ -98,7 +98,8 @@ def contract_signal(df: pd.DataFrame, event_sign: int, now: pd.Timestamp) -> dic
 
 def score(sens: dict[str, float], climate_themes: list[dict], contract_trend: float | None,
           contract_led_share: float | None, *, contract_move_24h: float | None = None,
-          stock_quiet_24h: bool = True, n_spikes: int = 0, params: OutlookParams | None = None) -> Outlook:
+          stock_quiet_24h: bool = True, n_spikes: int = 0, reacted_n: int | None = None,
+          params: OutlookParams | None = None) -> Outlook:
     p = params or OutlookParams()
     drivers: list[Driver] = []
     total = 0.0
@@ -115,12 +116,18 @@ def score(sens: dict[str, float], climate_themes: list[dict], contract_trend: fl
         share = 0.0 if contract_led_share is None else float(contract_led_share)
         contribution = p.contract_scale * math.tanh(contract_trend / p.contract_trend_pts_for_full) * (0.5 + 0.5 * share)
         total += contribution
-        drivers.append(Driver("contract", f"The company's contract moved {contract_trend:+.0f} pts over 7 days "
-                                          f"(it led the stock in {share:.0%} of its spikes).", contribution))
+        if reacted_n is None:
+            led_text = f"it led the stock in {share:.0%} of the spikes where it moved"
+        elif reacted_n == 0:
+            led_text = f"it did not move on any of the {n_spikes} spikes"
+        else:
+            led_text = f"it moved first on {round(share * reacted_n)} of the {n_spikes} spikes, and moved at all on {reacted_n}"
+        drivers.append(Driver("contract", f"The company's contract moved {contract_trend:+.0f} pts over 7 days ({led_text}).",
+                              contribution))
         if (share >= p.led_share_for_pending and contract_move_24h is not None
                 and abs(contract_move_24h) >= p.pending_move_pts and stock_quiet_24h):
             drivers.append(Driver("contract", f"The contract has moved {contract_move_24h:+.0f} pts in the last 24 h "
-                                              f"without a stock move yet, and it led the stock in {share:.0%} of its spikes.", 0.0))
+                                              f"without a stock move yet, and {led_text}.", 0.0))
     if total > p.neutral_band:
         label = "bullish"
     elif total < -p.neutral_band:

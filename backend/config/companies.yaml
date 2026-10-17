@@ -1,5 +1,5 @@
 # Tech companies the stock dashboard knows about. Any ticker can be searched; this file adds a name,
-# a GDELT news query and the Polymarket contract(s) whose odds are compared with the stock at each
+# a GDELT news query (OR'd terms must sit inside parentheses) and the Polymarket contract(s) whose odds are compared with the stock at each
 # spike. The FIRST contract is the one shown and scored; later ones are fallbacks for an operator.
 #
 # event_sign: +1 when a rising YES price is good for the stock, -1 when it is bad.
@@ -13,7 +13,7 @@ companies:
   - ticker: NVDA
     name: Nvidia
     sector: semis
-    news_query: '"Nvidia" OR NVDA'
+    news_query: '("Nvidia" OR NVDA)'
     contracts:
       - id: poly:largest-company-dec-2026-nvda
         venue: polymarket
@@ -30,7 +30,7 @@ companies:
   - ticker: AAPL
     name: Apple
     sector: consumer tech
-    news_query: '"Apple" OR AAPL'
+    news_query: '("Apple" OR AAPL)'
     contracts:
       - id: poly:largest-company-dec-2026-aapl
         venue: polymarket
@@ -41,7 +41,7 @@ companies:
   - ticker: MSFT
     name: Microsoft
     sector: hyperscalers
-    news_query: '"Microsoft" OR MSFT'
+    news_query: '("Microsoft" OR MSFT)'
     contracts:
       - id: poly:msft-close-above-520-oct-19-2026
         venue: polymarket
@@ -58,7 +58,7 @@ companies:
   - ticker: TSLA
     name: Tesla
     sector: consumer tech
-    news_query: '"Tesla" OR TSLA'
+    news_query: '("Tesla" OR TSLA)'
     contracts:
       - id: poly:tsla-above-350-end-oct-2026
         venue: polymarket
@@ -69,7 +69,7 @@ companies:
   - ticker: GOOGL
     name: Alphabet
     sector: hyperscalers
-    news_query: '"Alphabet" OR Google OR GOOGL'
+    news_query: '("Alphabet" OR Google OR GOOGL)'
     contracts:
       - id: poly:largest-company-dec-2026-googl
         venue: polymarket
@@ -80,17 +80,17 @@ companies:
   - ticker: AMZN
     name: Amazon
     sector: hyperscalers
-    news_query: '"Amazon" OR AMZN'
+    news_query: '("Amazon" OR AMZN)'
     contracts: []   # its "largest company" leg sits at 0.05%: no information in the odds
   - ticker: META
     name: Meta Platforms
     sector: hyperscalers
-    news_query: '"Meta Platforms" OR "Meta stock" OR Zuckerberg'
+    news_query: '("Meta Platforms" OR "Meta stock" OR Zuckerberg)'
     contracts: []   # no company-level Polymarket contract on 2026-10-17
   - ticker: AMD
     name: AMD
     sector: semis
-    news_query: '"Advanced Micro Devices" OR AMD'
+    news_query: '("Advanced Micro Devices" OR AMD)'
     contracts:
       - id: poly:amd-q3-data-center-revenue-above-8b
         venue: polymarket

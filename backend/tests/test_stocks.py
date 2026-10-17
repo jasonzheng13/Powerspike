@@ -80,7 +80,7 @@ def test_company_metadata_configured_and_not(monkeypatch):
     assert c["ticker"] == "NVDA" and c["configured"] is True and c["contracts"]
     monkeypatch.setattr(stocks, "company_name", lambda t: "Zed Corp")
     z = stocks.company("zzzq")
-    assert z == {"ticker": "ZZZQ", "name": "Zed Corp", "sector": None, "news_query": '"Zed Corp" OR ZZZQ',
+    assert z == {"ticker": "ZZZQ", "name": "Zed Corp", "sector": None, "news_query": '("Zed Corp" OR ZZZQ)',
                  "contracts": [], "configured": False}
 
 
