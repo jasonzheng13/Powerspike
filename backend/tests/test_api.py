@@ -55,7 +55,7 @@ def env(tmp_path, monkeypatch):
                         lambda token_id, start, end, fidelity=1: contract[(contract.index >= start) & (contract.index <= end)])
 
     news = []
-    monkeypatch.setattr(api, "headlines", lambda q, s, e, limit=15: news.append(q) or [{"title": "Cheap model rattles chips", "url": "u", "domain": "d", "seendate": "x"}])
+    monkeypatch.setattr(api, "fetch_headlines", lambda q, s, e, limit=15: news.append(q) or [{"title": "Cheap model rattles chips", "url": "u", "domain": "d", "seendate": "x"}])
     monkeypatch.setattr(explain, "_generate", _generate)
     monkeypatch.setattr(stocks, "company_name", lambda t: "Zed Corp")
     for f in (api._bars, api._spikes, api._contract_bars, api._reactions, api._climate, api._outlook):
@@ -159,3 +159,41 @@ def test_explain_uses_the_servers_copy_of_the_spike(env):
     assert client.post("/api/stocks/NVDA/explain", json={"spike": unknown}).status_code == 404
     assert client.post("/api/stocks/NVDA/explain", json={"spike": {"kind": "drift"}}).status_code in (404, 422)
     assert client.post("/api/stocks/ZZZZZZ/explain", json={"spike": spike}).status_code == 404
+
+
+def test_ticker_path_is_validated(client):
+    assert client.get("/api/stocks/%3Cscript%3E").status_code == 422
+    assert client.get("/api/stocks/nvda%20or%201=1/spikes").status_code == 422
+    assert client.get("/api/stocks/brk.b").status_code == 200    # a legal symbol (the stub serves it)
+
+
+def test_expired_contract_is_skipped(env, monkeypatch):
+    client = env["client"]
+    from powerspike import config
+    live = dict(config.company("NVDA")["contracts"][0])
+    expired = {**live, "id": "poly:old", "closes": "2025-12-01"}
+    fake_cos = [{**config.company("NVDA"), "contracts": [expired, live]}]
+    monkeypatch.setattr(config, "companies", lambda: fake_cos)
+    r = client.get("/api/stocks/NVDA").json()
+    assert r["contract"]["id"] == live["id"]
+
+
+def test_pinned_contract_counts_as_absent(env, monkeypatch):
+    client = env["client"]
+    monkeypatch.setattr(polymarket, "price_history",
+                        lambda token_id, start, end, fidelity=1: pd.DataFrame(
+                            {"price": 0.999, "volume": float("nan")}, index=pd.date_range(start, end, freq="1min", tz="UTC")))
+    assert client.get("/api/stocks/NVDA").json()["contract"] is None
+    assert client.get("/api/stocks/NVDA/outlook").json()["contract"] is None
+
+
+def test_failed_headline_fetches_are_not_memoised(env, monkeypatch):
+    client, news = env["client"], env["news"]
+    replies = iter([None, [{"title": "late", "url": "u", "domain": "d", "seendate": "x"}]])
+    monkeypatch.setattr(api, "fetch_headlines", lambda q, s, e, limit=15: news.append(q) or next(replies))
+    spike = client.get("/api/stocks/NVDA/spikes").json()["spikes"][0]
+    first = client.post("/api/stocks/NVDA/explain", json={"spike": spike}).json()
+    second = client.post("/api/stocks/NVDA/explain", json={"spike": spike}).json()
+    assert first["headlines"] == [] and second["headlines"][0]["title"] == "late" and len(news) == 2
+    third = client.post("/api/stocks/NVDA/explain", json={"spike": spike}).json()
+    assert third == second and len(news) == 2

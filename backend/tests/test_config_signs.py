@@ -47,6 +47,7 @@ def test_companies_are_configured_with_well_formed_contracts():
             assert k["venue"] == "polymarket" and k["id"].startswith("poly:"), k
             assert k["event_sign"] in (-1, 1) and k["name"] and k["question"]
             assert str(k["token_id"]).isdigit(), k["id"]  # a CLOB token id, not a slug
+            assert k.get("closes"), f"{k['id']} needs a settlement date so it is skipped once settled"
             ids.append(k["id"])
     assert len(ids) == len(set(ids))
     assert config.company("NVDA")["contracts"], "NVDA needs a contract for the demo"

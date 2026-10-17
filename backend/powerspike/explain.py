@@ -90,7 +90,13 @@ def gdelt_query(query: str, english: bool = True) -> str:
 
 
 def headlines(query: str, start: pd.Timestamp, end: pd.Timestamp, limit: int = 15) -> list[dict]:
-    """Articles matching `query` published in [start, end]. Returns [{title, url, domain, seendate}]."""
+    """Articles matching `query` published in [start, end]; [] when there are none *or the fetch failed*."""
+    return fetch_headlines(query, start, end, limit) or []
+
+
+def fetch_headlines(query: str, start: pd.Timestamp, end: pd.Timestamp, limit: int = 15) -> list[dict] | None:
+    """Like `headlines`, but None when GDELT could not be asked (429s, busy, timeout), so callers can avoid
+    memoising a transient failure. Returns [{title, url, domain, seendate}]."""
     fmt = "%Y%m%d%H%M%S"
     params = {
         "query": gdelt_query(query), "mode": "artlist", "format": "json", "sort": "datedesc",
@@ -103,7 +109,7 @@ def headlines(query: str, start: pd.Timestamp, end: pd.Timestamp, limit: int = 1
     except (httpx.HTTPError, ValueError, GdeltBusy) as e:
         # A malformed query comes back as 200 + plain text, which is the ValueError branch.
         log.warning("GDELT gave no articles for %r: %s: %s", query, type(e).__name__, str(e)[:120])
-        return []
+        return None
     return [{k: a.get(k) for k in ("title", "url", "domain", "seendate")} for a in arts]
 
 

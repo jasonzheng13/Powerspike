@@ -25,7 +25,7 @@ export default function OutlookCard({ outlook, loading, error, pending }: Props)
         <div className="verdict flat skeleton">scoring</div>
         <p className="muted">
           {pending > 0
-            ? `Reading the news around ${pending} spike${pending === 1 ? "" : "s"}, about 5 seconds each.`
+            ? `Reading the news around ${pending} spike${pending === 1 ? "" : "s"}. The news index allows one request every 15 seconds, so this can take a minute or two.`
             : loading
               ? "Weighing the AI news climate against this stock's history."
               : "Waiting for spikes."}

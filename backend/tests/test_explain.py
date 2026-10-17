@@ -162,3 +162,12 @@ def test_gdelt_retries_a_429_up_to_three_times(monkeypatch):
 
     monkeypatch.setattr(explain.httpx, "get", fake_get)
     assert explain.headlines("q", T, T) == [{"title": "t", "url": "u", "domain": "d", "seendate": "s"}]
+
+
+def test_fetch_headlines_distinguishes_failure_from_no_articles(monkeypatch):
+    monkeypatch.setattr(explain, "GDELT_MIN_INTERVAL", 0.0)
+    monkeypatch.setattr(explain, "_gdelt_next_slot", 0.0)
+    monkeypatch.setattr(explain.httpx, "get", lambda url, params=None, timeout=None: httpx.Response(429, text="slow down", request=httpx.Request("GET", url)))
+    assert explain.fetch_headlines("q", T, T) is None and explain.headlines("q", T, T) == []
+    monkeypatch.setattr(explain.httpx, "get", lambda url, params=None, timeout=None: httpx.Response(200, json={}, request=httpx.Request("GET", url)))
+    assert explain.fetch_headlines("q", T, T) == []

@@ -10,6 +10,7 @@ continuous aggregate).
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import duckdb
@@ -23,6 +24,9 @@ def backend() -> str:
     return "tiger" if DATABASE_URL else "duckdb"
 
 
+_connect_lock = threading.Lock()  # two first-time connections racing on CREATE TABLE is a DuckDB write-write conflict
+
+
 def connect(path: Path | str | None = None):
     """Default connection: Tiger when DD_DATABASE_URL is set, else the DuckDB file at `path`/CACHE_PATH."""
     if path is None and DATABASE_URL:
@@ -30,10 +34,11 @@ def connect(path: Path | str | None = None):
         return pg.connect(DATABASE_URL)
     path = CACHE_PATH if path is None else path
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    con = duckdb.connect(str(path))
-    con.execute(
-        "CREATE TABLE IF NOT EXISTS bars (market_id VARCHAR, ts TIMESTAMPTZ, price DOUBLE, volume DOUBLE, PRIMARY KEY (market_id, ts))"
-    )
+    with _connect_lock:
+        con = duckdb.connect(str(path))
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS bars (market_id VARCHAR, ts TIMESTAMPTZ, price DOUBLE, volume DOUBLE, PRIMARY KEY (market_id, ts))"
+        )
     return con
 
 

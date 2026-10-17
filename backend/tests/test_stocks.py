@@ -1,5 +1,7 @@
 """On-demand stock and contract bars: freshness rules, pulls, company metadata. No network."""
 
+import time
+
 import pandas as pd
 import pytest
 
@@ -114,3 +116,51 @@ def test_ensure_contract_pulls_prices_only_and_is_a_noop_when_fresh(con, poly):
 def test_ensure_contract_returns_none_when_the_venue_has_nothing(con, monkeypatch):
     monkeypatch.setattr(polymarket, "price_history", lambda *a, **k: pd.DataFrame(columns=["price", "volume"]))
     assert stocks.ensure_contract(con, CONTRACT, days=3, now=AFTER_CLOSE) is None
+
+
+def test_concurrent_refreshes_of_one_ticker_pull_once(tmp_path, monkeypatch):
+    import threading
+    calls = []
+    frame = equity_sessions(SESSIONS, p0=180.0, seed=1)
+
+    def slow(ticker, start, end):
+        calls.append(ticker)
+        time.sleep(0.3)
+        return frame[(frame.index >= start) & (frame.index <= end)]
+
+    monkeypatch.setattr(equities, "backfill_bars", slow)
+    tokens, errors = [], []
+
+    def worker():
+        try:
+            tokens.append(stocks.refresh(cache.connect(tmp_path / "c.duckdb"), "NVDA", days=3, now=AFTER_CLOSE))
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == [] and len(calls) == 1 and len(set(tokens)) == 1
+
+
+def test_failed_head_pull_is_retried_next_time(con, yf, monkeypatch):
+    stocks.refresh(con, "NVDA", days=2, now=AFTER_CLOSE)
+    n = len(yf)
+
+    def boom(ticker, start, end):
+        raise RuntimeError("yahoo down")
+
+    monkeypatch.setattr(equities, "backfill_bars", boom)
+    with pytest.raises(RuntimeError):
+        stocks.refresh(con, "NVDA", days=10, now=AFTER_CLOSE)     # the head window is missing; the pull fails
+    monkeypatch.undo()
+    monkeypatch.setattr(equities, "backfill_bars", lambda t, s, e: yf.__class__ and _record(yf, t, s, e))
+    stocks.refresh(con, "NVDA", days=10, now=AFTER_CLOSE)
+    assert len(yf) == n + 1                                         # tried again instead of trusting the failed attempt
+
+
+def _record(calls, ticker, start, end):
+    calls.append((ticker, pd.Timestamp(start), pd.Timestamp(end)))
+    return equities.EMPTY.copy()

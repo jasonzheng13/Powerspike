@@ -3,7 +3,7 @@
 Search-driven: every stock route starts by bringing the ticker's bars up to date
 (`stocks.refresh`) and uses the newest bar's timestamp as a *freshness token* in its cache keys,
 so a re-pull shows up without a restart. The slow calls are the explanations (one GDELT request
-per spike, spaced 5.5 s apart) and the outlook, which needs every spike's explanation; the frontend
+per spike, spaced GDELT_MIN_INTERVAL apart) and the outlook, which needs every spike's explanation; the frontend
 asks for the cards first and the outlook last so the outlook hits the per-spike memo.
 
 If `frontend/dist` exists (``npm run build``) it is served at `/`, so one process hosts the demo.
@@ -12,6 +12,7 @@ If `frontend/dist` exists (``npm run build``) it is served at `/`, so one proces
 from __future__ import annotations
 
 import math
+import re
 import time
 from collections import OrderedDict
 from dataclasses import asdict
@@ -25,12 +26,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import config, leadlag, outlook, stocks
-from .detect import EQUITY_PARAMS, Spike, detect_jumps
-from .explain import AI_CLIMATE_QUERY, CLIMATE_HOURS, STOCK_NEWS_BEFORE_MIN, climate, explain_stock, headlines, news_window
+from .detect import EQUITY_PARAMS, DetectorParams, Spike, detect_jumps, in_tail
+from .explain import AI_CLIMATE_QUERY, CLIMATE_HOURS, STOCK_NEWS_BEFORE_MIN, climate, explain_stock, fetch_headlines, news_window
 from .ingest import cache
 from .ingest.equities import equity_id
 
 ALLOWED_DAYS = (7, 30)
+SYMBOL = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")   # the one client string that reaches yfinance, GDELT and the cache
+EMPTY = pd.DataFrame(columns=["price", "volume"])
 CLIMATE_TTL_S = 1800
 CONTRACT_WIRE_FREQ = "5min"   # the 1-minute contract grid is mostly forward-filled; the chart gets 5-minute points
 
@@ -87,6 +90,13 @@ def _days(days: int) -> int:
     return days
 
 
+def _ticker(raw: str) -> str:
+    t = raw.strip().upper()
+    if not SYMBOL.match(t):
+        raise HTTPException(422, "ticker must be a plain symbol such as NVDA or BRK.B")
+    return t
+
+
 def _token(ticker: str, days: int) -> str:
     """Refresh the ticker's bars and return the freshness token (newest bar, ISO)."""
     try:
@@ -109,8 +119,35 @@ def _spikes(ticker: str, days: int, token: str) -> tuple[Spike, ...]:
 
 
 def _first_contract(ticker: str) -> dict | None:
-    contracts = stocks.company(ticker)["contracts"]
-    return contracts[0] if contracts else None
+    """The first configured contract that has not settled (`closes: YYYY-MM-DD` in companies.yaml)."""
+    today = _now().tz_convert("America/New_York").date()
+    for c in stocks.company(ticker)["contracts"]:
+        closes = c.get("closes")
+        if closes and pd.Timestamp(closes).date() < today:
+            continue
+        return c
+    return None
+
+
+def _contract_by_id(contract_id: str | None) -> dict | None:
+    if contract_id is None:
+        return None
+    return next((k for c in config.companies() for k in c["contracts"] if k["id"] == contract_id), None)
+
+
+def _live_contract(ticker: str, days: int) -> tuple[dict | None, str | None]:
+    """(contract, token) for the contract worth showing: configured, not settled, and not pinned in a tail
+    for the whole window (a settled or dead contract is a flat 0/100% line that reads as a 'trend')."""
+    c = _first_contract(ticker)
+    if c is None:
+        return None, None
+    ctoken = _contract_token(c, days)
+    if ctoken is None:
+        return c, None
+    cdf = _contract_bars(c["id"], days, ctoken)
+    if cdf.empty or bool(in_tail(cdf["price"].astype(float), DetectorParams().tail).all()):
+        return c, None
+    return c, ctoken
 
 
 def _contract_token(contract: dict, days: int) -> str | None:
@@ -128,13 +165,13 @@ def _contract_bars(contract_id: str, days: int, ctoken: str) -> pd.DataFrame:
 
 
 @lru_cache(maxsize=64)
-def _reactions(ticker: str, days: int, token: str, ctoken: str | None) -> tuple[dict | None, ...]:
+def _reactions(ticker: str, days: int, token: str, contract_id: str | None, ctoken: str | None) -> tuple[dict | None, ...]:
     """Per spike (aligned with `_spikes`): the contract's reaction as JSON, or None when no contract is configured."""
     spikes = _spikes(ticker, days, token)
-    c = _first_contract(ticker)
+    c = _contract_by_id(contract_id)
     if c is None:
         return tuple(None for _ in spikes)
-    cdf = _contract_bars(c["id"], days, ctoken) if ctoken else pd.DataFrame(columns=["price", "volume"])
+    cdf = _contract_bars(c["id"], days, ctoken) if ctoken else EMPTY
     return tuple(leadlag.contract_to_json(leadlag.react_contract(s, cdf, c["id"], c["event_sign"])) for s in spikes)
 
 
@@ -148,14 +185,19 @@ def _explanation(ticker: str, s: Spike) -> dict:
     key = f"{ticker}|{s.kind}|{_iso(s.peak)}|{company['news_query']}"
     hit = _explain_memo.get(key)
     if hit is not None:
-        _explain_memo.move_to_end(key)
+        try:
+            _explain_memo.move_to_end(key)
+        except KeyError:  # evicted by another thread between get and move
+            pass
         return hit
     start, end = news_window(s, before_min=STOCK_NEWS_BEFORE_MIN)
-    heads = headlines(company["news_query"], start, end)
+    fetched = fetch_headlines(company["news_query"], start, end)
+    heads = fetched or []
     out = {**explain_stock(s, company, heads), "headlines": heads}
-    _explain_memo[key] = out
-    while len(_explain_memo) > EXPLAIN_MEMO_SIZE:
-        _explain_memo.popitem(last=False)
+    if fetched is not None:   # a 429'd or timed-out fetch is not an answer worth keeping for the process lifetime
+        _explain_memo[key] = out
+        while len(_explain_memo) > EXPLAIN_MEMO_SIZE:
+            _explain_memo.popitem(last=False)
     return out
 
 
@@ -178,20 +220,23 @@ def _bucket() -> int:
 @lru_cache(maxsize=4)
 def _climate(bucket: int) -> dict:
     now = _now()
-    heads = headlines(AI_CLIMATE_QUERY, now - pd.Timedelta(hours=CLIMATE_HOURS), now, limit=40)
+    heads = fetch_headlines(AI_CLIMATE_QUERY, now - pd.Timedelta(hours=CLIMATE_HOURS), now, limit=40)
+    if heads is None:
+        _climate.cache_clear()   # do not pin a failed fetch for the whole bucket; the next call retries
+        heads = []
     return {**climate(heads), "headlines": heads, "as_of": _iso(now)}
 
 
 @lru_cache(maxsize=64)
-def _outlook(ticker: str, days: int, token: str, ctoken: str | None, bucket: int) -> dict:
+def _outlook(ticker: str, days: int, token: str, contract_id: str | None, ctoken: str | None, bucket: int) -> dict:
     spikes = _spikes(ticker, days, token)
-    reactions = _reactions(ticker, days, token, ctoken)
+    reactions = _reactions(ticker, days, token, contract_id, ctoken)
     company = stocks.company(ticker)
     pairs = [(s, _explanation(ticker, s)) for s in spikes]   # sequential: one GDELT slot each on a miss
     clim = _climate(bucket)
     contract_info = None
     trend = move_24h = led_share = None
-    c = _first_contract(ticker)
+    c = _contract_by_id(contract_id)
     if c is not None and ctoken:
         sig = outlook.contract_signal(_contract_bars(c["id"], days, ctoken), c["event_sign"], pd.Timestamp(ctoken))
         reacted = [r for r in reactions if r and r["status"] == "reacted"]
@@ -225,19 +270,16 @@ def companies() -> dict:
 
 @app.get("/api/stocks/{ticker}")
 def stock_series(ticker: str, days: int = Query(30)) -> dict:
-    ticker, days = ticker.upper(), _days(days)
+    ticker, days = _ticker(ticker), _days(days)
     token = _token(ticker, days)
     df = _bars(ticker, days, token)
     company = stocks.company(ticker)
     contract = None
-    c = _first_contract(ticker)
-    if c is not None:
-        ctoken = _contract_token(c, days)
-        cdf = _contract_bars(c["id"], days, ctoken) if ctoken else pd.DataFrame(columns=["price", "volume"])
-        if not cdf.empty:
-            wire = cdf["price"].resample(CONTRACT_WIRE_FREQ).last().dropna()
-            contract = {"id": c["id"], "name": c["name"], "question": c["question"], "event_sign": c["event_sign"],
-                        "ts": [_iso(t) for t in wire.index], "price": [float(p) for p in wire]}
+    c, ctoken = _live_contract(ticker, days)
+    if c is not None and ctoken:
+        wire = _contract_bars(c["id"], days, ctoken)["price"].resample(CONTRACT_WIRE_FREQ).last().dropna()
+        contract = {"id": c["id"], "name": c["name"], "question": c["question"], "event_sign": c["event_sign"],
+                    "ts": [_iso(t) for t in wire.index], "price": [float(p) for p in wire]}
     return {
         "ticker": ticker, "name": company["name"], "configured": company["configured"], "sector": company["sector"],
         "as_of": token,
@@ -250,12 +292,11 @@ def stock_series(ticker: str, days: int = Query(30)) -> dict:
 
 @app.get("/api/stocks/{ticker}/spikes")
 def stock_spikes(ticker: str, days: int = Query(30)) -> dict:
-    ticker, days = ticker.upper(), _days(days)
+    ticker, days = _ticker(ticker), _days(days)
     token = _token(ticker, days)
-    c = _first_contract(ticker)
-    ctoken = _contract_token(c, days) if c else None
+    c, ctoken = _live_contract(ticker, days)
     spikes = _spikes(ticker, days, token)
-    reactions = _reactions(ticker, days, token, ctoken)
+    reactions = _reactions(ticker, days, token, c["id"] if c else None, ctoken)
     return {"ticker": ticker, "as_of": token, "params": asdict(EQUITY_PARAMS),
             "spikes": [{**spike_to_json(s), "contract_leadlag": r} for s, r in zip(spikes, reactions)]}
 
@@ -271,7 +312,7 @@ def stock_explain(ticker: str, req: ExplainRequest, days: int = Query(30)) -> di
     The body's spike is only a reference (`kind`, `peak`); the server explains its own detected copy,
     so client fields never reach the prompt or the memo.
     """
-    ticker, days = ticker.upper(), _days(days)
+    ticker, days = _ticker(ticker), _days(days)
     token = _token(ticker, days)
     return _explanation(ticker, _server_spike(ticker, days, token, req.spike))
 
@@ -285,11 +326,10 @@ def ai_climate() -> dict:
 @app.get("/api/stocks/{ticker}/outlook")
 def stock_outlook(ticker: str, days: int = Query(30)) -> dict:
     """Bullish / bearish / neutral for the stock now, from its spikes, the AI climate and its contract."""
-    ticker, days = ticker.upper(), _days(days)
+    ticker, days = _ticker(ticker), _days(days)
     token = _token(ticker, days)
-    c = _first_contract(ticker)
-    ctoken = _contract_token(c, days) if c else None
-    return _outlook(ticker, days, token, ctoken, _bucket())
+    c, ctoken = _live_contract(ticker, days)
+    return _outlook(ticker, days, token, c["id"] if c else None, ctoken, _bucket())
 
 
 # ---- built frontend (optional) ---------------------------------------------------------
