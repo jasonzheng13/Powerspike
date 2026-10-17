@@ -1,17 +1,19 @@
-"""HTTP API for the TypeScript frontend.   cd backend && uvicorn powerspike.api:app --reload
+"""HTTP API for the stock dashboard.   cd backend && uvicorn powerspike.api:app --reload
 
-The detector, explainer and exposure lookup run here; the browser only owns the
-replay clock. Every alert carries `confirmed_at`, and the frontend filters on
-`confirmed_at <= now` (lib/replay.ts), so the demo stays free of look-ahead.
+Search-driven: every stock route starts by bringing the ticker's bars up to date
+(`stocks.refresh`) and uses the newest bar's timestamp as a *freshness token* in its cache keys,
+so a re-pull shows up without a restart. The slow calls are the explanations (one GDELT request
+per spike, spaced 5.5 s apart) and the outlook, which needs every spike's explanation; the frontend
+asks for the cards first and the outlook last so the outlook hits the per-spike memo.
 
-If `frontend/dist` exists (``npm run build``) it is served at `/`, so one process
-hosts the whole demo.
+If `frontend/dist` exists (``npm run build``) it is served at `/`, so one process hosts the demo.
 """
 
 from __future__ import annotations
 
-import json
 import math
+import time
+from dataclasses import asdict
 from functools import lru_cache
 from typing import Any
 
@@ -21,18 +23,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, expose, leadlag
-from .detect import DetectorParams, Spike, detect
-from .explain import explain, headlines, news_window
+from . import config, leadlag, outlook, stocks
+from .detect import EQUITY_PARAMS, Spike, detect_jumps
+from .explain import AI_CLIMATE_QUERY, CLIMATE_HOURS, climate, explain_stock, headlines, news_window
 from .ingest import cache
 from .ingest.equities import equity_id
-from .synthetic import demo_equity, demo_market
 
-SYNTHETIC = {"id": "synthetic-demo", "name": "Fed cuts in December (synthetic demo)",
-             "venue": "synthetic", "event_type": "fed_rates"}
-DEFAULT_NEWS_QUERY = '"Federal Reserve" OR Powell'
+ALLOWED_DAYS = (7, 30)
+CLIMATE_TTL_S = 1800
+CONTRACT_WIRE_FREQ = "5min"   # the 1-minute contract grid is mostly forward-filled; the chart gets 5-minute points
 
-app = FastAPI(title="Powerspike API", version="0.1.0")
+app = FastAPI(title="Powerspike API", version="0.2.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -67,163 +68,203 @@ def spike_from_json(d: dict[str, Any]) -> Spike:
     fields.update({k: pd.Timestamp(d[k]) for k in ("start", "peak", "confirmed_at")})
     vr = d.get("volume_ratio")
     fields["volume_ratio"] = float("nan") if vr is None else float(vr)
+    fields["unit"] = d.get("unit", "prob")
     return Spike(**fields)
 
 
-def _markets() -> list[dict]:
+def _con():
+    return cache.connect()
+
+
+def _now() -> pd.Timestamp:
+    return stocks._now()
+
+
+def _days(days: int) -> int:
+    if days not in ALLOWED_DAYS:
+        raise HTTPException(400, f"days must be one of {ALLOWED_DAYS}")
+    return days
+
+
+def _token(ticker: str, days: int) -> str:
+    """Refresh the ticker's bars and return the freshness token (newest bar, ISO)."""
     try:
-        cached = set(cache.cached_markets(cache.connect()))
-    except Exception:
-        cached = set()
-    real = [{k: m[k] for k in ("id", "name", "venue", "event_type")} for m in config.markets() if m["id"] in cached]
-    return real + [SYNTHETIC]
-
-
-def _market(market_id: str) -> dict:
-    for m in _markets():
-        if m["id"] == market_id:
-            return m
-    raise HTTPException(404, f"unknown or uncached market {market_id!r}")
-
-
-@lru_cache(maxsize=32)
-def _load(market_id: str) -> pd.DataFrame:
-    if market_id == SYNTHETIC["id"]:
-        return demo_market()
-    return cache.load(cache.connect(), market_id)
+        return stocks.refresh(_con(), ticker, days, _now()).isoformat()
+    except stocks.UnknownTicker:
+        raise HTTPException(404, f"no price data for {ticker!r}")
+    except Exception as e:  # yfinance transport errors: say so instead of a 500
+        raise HTTPException(503, f"could not load {ticker!r}: {type(e).__name__}: {str(e)[:200]}")
 
 
 @lru_cache(maxsize=64)
-def _load_equity(market_id: str, ticker: str) -> pd.DataFrame:
-    """ETF bars for a market's lead/lag: synthetic ETFs for the synthetic market, the cache otherwise."""
-    if market_id == SYNTHETIC["id"]:
-        return demo_equity(ticker) if ticker in expose.etfs(SYNTHETIC["event_type"]) else pd.DataFrame(columns=["price", "volume"])
-    return cache.load(cache.connect(), equity_id(ticker))
+def _bars(ticker: str, days: int, token: str) -> pd.DataFrame:
+    return cache.load(_con(), equity_id(ticker), start=pd.Timestamp(token) - pd.Timedelta(days=days))
 
 
-@lru_cache(maxsize=256)
-def _leadlag_cached(key: str) -> dict:
-    body = json.loads(key)
-    s = spike_from_json(body["spike"])
-    m = _market(body["market_id"])
-    equities = {t: _load_equity(m["id"], t) for t in expose.etfs(m["event_type"])}
-    ll = leadlag.lead_lag(s, equities, expose.expected(m["event_type"]), expose.event_sign(m["id"]))
-    return leadlag.to_json(ll)
+@lru_cache(maxsize=64)
+def _spikes(ticker: str, days: int, token: str) -> tuple[Spike, ...]:
+    # Jumps only: drifts over session-only 15-minute bars alarm on routine overnight gaps.
+    return tuple(detect_jumps(_bars(ticker, days, token), equity_id(ticker), EQUITY_PARAMS))
 
 
-@lru_cache(maxsize=256)
-def _explain_cached(key: str) -> tuple[str, list[dict]]:
-    body = json.loads(key)
-    s = spike_from_json(body["spike"])
+def _first_contract(ticker: str) -> dict | None:
+    contracts = stocks.company(ticker)["contracts"]
+    return contracts[0] if contracts else None
+
+
+def _contract_token(contract: dict, days: int) -> str | None:
+    """Refresh the contract's prices; None when the venue has nothing or the pull failed (never a 500)."""
+    try:
+        ts = stocks.ensure_contract(_con(), contract, days, _now())
+    except Exception:
+        return None
+    return None if ts is None else ts.isoformat()
+
+
+@lru_cache(maxsize=64)
+def _contract_bars(contract_id: str, days: int, ctoken: str) -> pd.DataFrame:
+    return cache.load(_con(), contract_id, start=pd.Timestamp(ctoken) - pd.Timedelta(days=days))
+
+
+@lru_cache(maxsize=64)
+def _reactions(ticker: str, days: int, token: str, ctoken: str | None) -> tuple[dict | None, ...]:
+    """Per spike (aligned with `_spikes`): the contract's reaction as JSON, or None when no contract is configured."""
+    spikes = _spikes(ticker, days, token)
+    c = _first_contract(ticker)
+    if c is None:
+        return tuple(None for _ in spikes)
+    cdf = _contract_bars(c["id"], days, ctoken) if ctoken else pd.DataFrame(columns=["price", "volume"])
+    return tuple(leadlag.contract_to_json(leadlag.react_contract(s, cdf, c["id"], c["event_sign"])) for s in spikes)
+
+
+_explain_memo: dict[str, dict] = {}   # keyed on the spike's identity, not its JSON bytes (a client may re-serialise numbers)
+
+
+def _explanation(ticker: str, s: Spike) -> dict:
+    company = stocks.company(ticker)
+    key = f"{ticker}|{s.kind}|{_iso(s.peak)}|{company['news_query']}"
+    hit = _explain_memo.get(key)
+    if hit is not None:
+        return hit
     start, end = news_window(s)
-    heads = headlines(body["query"], start, end) if body["query"] else []
-    why = explain(s, body["market_name"], heads, expose.note(body["event_type"]))
-    return why, heads
+    heads = headlines(company["news_query"], start, end)
+    out = {**explain_stock(s, company, heads), "headlines": heads}
+    _explain_memo[key] = out
+    return out
 
 
-@lru_cache(maxsize=32)
-def _exposed_cached(event_type: str) -> dict:
-    # One EDGAR call per event type per process, instead of one per card per tick.
-    return expose.exposed(event_type)
+def _bucket() -> int:
+    return int(time.time() // CLIMATE_TTL_S)
+
+
+@lru_cache(maxsize=4)
+def _climate(bucket: int) -> dict:
+    now = _now()
+    heads = headlines(AI_CLIMATE_QUERY, now - pd.Timedelta(hours=CLIMATE_HOURS), now, limit=40)
+    return {**climate(heads), "headlines": heads, "as_of": _iso(now)}
+
+
+@lru_cache(maxsize=64)
+def _outlook(ticker: str, days: int, token: str, ctoken: str | None, bucket: int) -> dict:
+    spikes = _spikes(ticker, days, token)
+    reactions = _reactions(ticker, days, token, ctoken)
+    company = stocks.company(ticker)
+    pairs = [(s, _explanation(ticker, s)) for s in spikes]   # sequential: one GDELT slot each on a miss
+    clim = _climate(bucket)
+    contract_info = None
+    trend = move_24h = led_share = None
+    c = _first_contract(ticker)
+    if c is not None and ctoken:
+        sig = outlook.contract_signal(_contract_bars(c["id"], days, ctoken), c["event_sign"], pd.Timestamp(ctoken))
+        reacted = [r for r in reactions if r and r["status"] == "reacted"]
+        led_share = (sum(r["verdict"] == "contract led" for r in reacted) / len(reacted)) if reacted else None
+        if sig:
+            trend, move_24h = sig["trend_7d_pts"], sig["move_24h_pts"]
+            contract_info = {**sig, "led_share": led_share, "id": c["id"], "name": c["name"]}
+    last = pd.Timestamp(token)
+    quiet = not any(s.peak >= last - pd.Timedelta(hours=24) for s in spikes)
+    o = outlook.score(outlook.sensitivity(pairs), clim["themes"], trend, led_share, contract_move_24h=move_24h,
+                      stock_quiet_24h=quiet, n_spikes=len(spikes))
+    return {
+        "ticker": ticker, "name": company["name"], "label": o.label, "confidence": o.confidence, "score": o.score,
+        "n_spikes": o.n_spikes, "drivers": [asdict(d) for d in o.drivers], "prose": outlook.prose(o, company["name"]),
+        "climate_summary": clim["summary"], "contract": contract_info, "disclaimer": outlook.DISCLAIMER, "as_of": token,
+    }
 
 
 # ---- routes ----------------------------------------------------------------------------
 
-@app.get("/api/markets")
-def list_markets() -> dict:
-    return {"markets": _markets()}
+@app.get("/api/companies")
+def companies() -> dict:
+    """Configured companies for search suggestions (token ids stay server-side)."""
+    return {"companies": [
+        {**{k: c[k] for k in ("ticker", "name", "sector", "news_query")},
+         "contracts": [{k: x[k] for k in ("id", "name", "question", "event_sign")} for x in c["contracts"]]}
+        for c in config.companies()
+    ]}
 
 
-@app.get("/api/store")
-def store() -> dict:
-    """Where the bars live and how fresh each market is. `backend` is 'tiger' (Tiger Cloud hypertable +
-    bars_15min continuous aggregate) or 'duckdb' (local file); `markets` is empty when nothing is cached."""
-    try:
-        rows = cache.stats(cache.connect())
-    except Exception:
-        rows = []
-    return {"backend": cache.backend(), "markets": rows}
-
-
-@app.get("/api/markets/{market_id}/series")
-def market_series(market_id: str) -> dict:
-    _market(market_id)
-    df = _load(market_id)
-    if df.empty:
-        raise HTTPException(404, f"no data cached for {market_id!r}")
-    has_volume = "volume" in df and df["volume"].notna().any()
+@app.get("/api/stocks/{ticker}")
+def stock_series(ticker: str, days: int = Query(30)) -> dict:
+    ticker, days = ticker.upper(), _days(days)
+    token = _token(ticker, days)
+    df = _bars(ticker, days, token)
+    company = stocks.company(ticker)
+    contract = None
+    c = _first_contract(ticker)
+    if c is not None:
+        ctoken = _contract_token(c, days)
+        cdf = _contract_bars(c["id"], days, ctoken) if ctoken else pd.DataFrame(columns=["price", "volume"])
+        if not cdf.empty:
+            wire = cdf["price"].resample(CONTRACT_WIRE_FREQ).last().dropna()
+            contract = {"id": c["id"], "name": c["name"], "question": c["question"], "event_sign": c["event_sign"],
+                        "ts": [_iso(t) for t in wire.index], "price": [float(p) for p in wire]}
     return {
-        "market_id": market_id,
-        "ts": [_iso(t) for t in df.index],
-        "price": [float(p) for p in df["price"]],
-        "volume": [_num(v) for v in df["volume"]] if has_volume else None,
-    }
-
-
-@app.get("/api/markets/{market_id}/alerts")
-def market_alerts(
-    market_id: str,
-    window: int = Query(15, ge=1, le=240),
-    score_threshold: float = Query(4.0, ge=0),
-    hold: int = Query(30, ge=1, le=1440),
-    vol_min_ratio: float = Query(2.0, gt=1),
-) -> dict:
-    _market(market_id)
-    df = _load(market_id)
-    if df.empty:
-        raise HTTPException(404, f"no data cached for {market_id!r}")
-    p = DetectorParams(window=window, score_threshold=score_threshold, hold=hold, vol_min_ratio=vol_min_ratio)
-    return {"market_id": market_id, "params": p.__dict__, "alerts": [spike_to_json(s) for s in detect(df, market_id, p)]}
-
-
-@app.get("/api/markets/{market_id}/equities/{ticker}/series")
-def equity_series(market_id: str, ticker: str) -> dict:
-    _market(market_id)
-    ticker = ticker.upper()
-    df = _load_equity(market_id, ticker)
-    if df.empty:
-        raise HTTPException(404, f"no equity bars cached for {ticker!r}; run scripts/pull_data.py")
-    return {
-        "market_id": market_id,
-        "ticker": ticker,
+        "ticker": ticker, "name": company["name"], "configured": company["configured"], "sector": company["sector"],
+        "as_of": token,
         "ts": [_iso(t) for t in df.index],
         "price": [float(p) for p in df["price"]],
         "volume": [_num(v) for v in df["volume"]],
+        "contract": contract,
     }
 
 
-class LeadLagRequest(BaseModel):
-    market_id: str
-    spike: dict[str, Any]
-
-
-@app.post("/api/leadlag")
-def leadlag_for_spike(req: LeadLagRequest) -> dict:
-    """Did the market lead or lag its exposed ETFs around this spike? Carries its own confirmed_at."""
-    _market(req.market_id)
-    return _leadlag_cached(json.dumps({"market_id": req.market_id, "spike": req.spike}, sort_keys=True, default=str))
+@app.get("/api/stocks/{ticker}/spikes")
+def stock_spikes(ticker: str, days: int = Query(30)) -> dict:
+    ticker, days = ticker.upper(), _days(days)
+    token = _token(ticker, days)
+    c = _first_contract(ticker)
+    ctoken = _contract_token(c, days) if c else None
+    spikes = _spikes(ticker, days, token)
+    reactions = _reactions(ticker, days, token, ctoken)
+    return {"ticker": ticker, "as_of": token, "params": asdict(EQUITY_PARAMS),
+            "spikes": [{**spike_to_json(s), "contract_leadlag": r} for s, r in zip(spikes, reactions)]}
 
 
 class ExplainRequest(BaseModel):
-    market_id: str
     spike: dict[str, Any]
-    query: str = DEFAULT_NEWS_QUERY
 
 
-@app.post("/api/explain")
-def explain_spike(req: ExplainRequest) -> dict:
-    m = _market(req.market_id)
-    key = json.dumps({"spike": req.spike, "query": req.query, "market_name": m["name"],
-                      "event_type": m["event_type"]}, sort_keys=True, default=str)
-    why, heads = _explain_cached(key)
-    return {"why": why, "headlines": heads}
+@app.post("/api/stocks/{ticker}/explain")
+def stock_explain(ticker: str, req: ExplainRequest) -> dict:
+    """Why this spike happened: headlines around it plus a theme-tagged explanation. Memoised per spike."""
+    return _explanation(ticker.upper(), spike_from_json(req.spike))
 
 
-@app.get("/api/exposure/{event_type}")
-def exposure(event_type: str) -> dict:
-    if event_type not in config.exposure():
-        raise HTTPException(404, f"unknown event type {event_type!r}")
-    return _exposed_cached(event_type)
+@app.get("/api/climate")
+def ai_climate() -> dict:
+    """The last 72 h of AI headlines summarised into themes; refreshed every 30 minutes."""
+    return _climate(_bucket())
+
+
+@app.get("/api/stocks/{ticker}/outlook")
+def stock_outlook(ticker: str, days: int = Query(30)) -> dict:
+    """Bullish / bearish / neutral for the stock now, from its spikes, the AI climate and its contract."""
+    ticker, days = ticker.upper(), _days(days)
+    token = _token(ticker, days)
+    c = _first_contract(ticker)
+    ctoken = _contract_token(c, days) if c else None
+    return _outlook(ticker, days, token, ctoken, _bucket())
 
 
 # ---- built frontend (optional) ---------------------------------------------------------
