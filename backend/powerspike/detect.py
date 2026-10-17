@@ -18,11 +18,13 @@ the move; `Spike.confirmed_at` records that time so the demo stays honest.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from typing import Literal
 
 import numpy as np
 import pandas as pd
 
 MAD_TO_SIGMA = 1.4826  # makes MAD comparable to a standard deviation for normal data
+NY = "America/New_York"
 
 
 @dataclass
@@ -42,6 +44,17 @@ class DetectorParams:
     cusum_k: float = 0.5        # CUSUM slack, in robust-sigma units per drift bar
     cusum_h: float = 6.0        # CUSUM alarm level, in robust-sigma units
     eps: float = 0.005          # clip prices to [eps, 1-eps] before logit
+    onset_frac: float = 0.2     # a jump's `start` is the bar before the price had covered this share of the first hot window's change
+    space: Literal["logit", "log"] = "logit"  # "log": price is dollars; moves are log returns, min_scale is in
+                                # log-return units, min_notional converts to shares as dollars / price, and the
+                                # tail gate is off (there is no settled end of a dollar price)
+
+
+# Stocks: dollar prices on session-only 1-minute bars. Every shift in `score_series` is positional,
+# so the overnight gap is simply one more bar: a move in the first bars of a session has its `start`
+# at the previous close and `p_before` is roughly that close, and a move at 15:50 ET is confirmed the
+# next morning. That is deliberate: the gap *is* the move the overnight news caused.
+EQUITY_PARAMS = DetectorParams(space="log", min_scale=0.002, min_notional=1e5)
 
 
 @dataclass
@@ -57,6 +70,7 @@ class Spike:
     volume_ratio: float        # window volume / its usual level (NaN if no volume)
     persistence: float         # share of the move still held `hold` bars later, 0..1
     score: float
+    unit: str = "prob"         # "prob" (0..1 odds) | "usd" (dollar price); last, with a default, so positional construction keeps working
 
     @property
     def direction(self) -> str:
@@ -64,9 +78,16 @@ class Spike:
 
     def headline(self) -> str:
         """One-line summary for an alert card, e.g. 'Fed cut odds 38% → 61% in 15 min (6.2σ, 4.0× volume)'."""
-        mins = max(1, int((self.peak - self.start).total_seconds() // 60))
         vol = "" if np.isnan(self.volume_ratio) else f", {self.volume_ratio:.1f}× volume"
-        return f"{self.p_before:.0%} → {self.p_after:.0%} in {mins} min ({self.z:.1f}σ{vol})"
+        if self.unit == "usd":
+            before, after = f"${self.p_before:,.2f}", f"${self.p_after:,.2f}"
+        else:
+            before, after = f"{self.p_before:.0%}", f"{self.p_after:.0%}"
+        if self.start.tz_convert(NY).date() != self.peak.tz_convert(NY).date():
+            when = "across the open"  # session-only bars: the move spans the overnight gap
+        else:
+            when = f"in {max(1, int((self.peak - self.start).total_seconds() // 60))} min"
+        return f"{before} → {after} {when} ({self.z:.1f}σ{vol})"
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -77,6 +98,11 @@ class Spike:
 def logit(p: pd.Series, eps: float = 0.005) -> pd.Series:
     p = p.clip(eps, 1 - eps)
     return np.log(p / (1 - p))
+
+
+def transform(price: pd.Series, p: DetectorParams) -> pd.Series:
+    """The space moves are measured in: log-odds for a probability, log price for dollars."""
+    return logit(price, p.eps) if p.space == "logit" else np.log(price.astype(float))
 
 
 def _rolling_mad(x: pd.Series, n: int) -> pd.Series:
@@ -105,7 +131,7 @@ def score_series(df: pd.DataFrame, params: DetectorParams | None = None) -> pd.D
     """Add per-bar detector columns: logit, delta, z, volume_ratio, vol_conf, persistence, score."""
     p = params or DetectorParams()
     out = df.copy()
-    out["logit"] = logit(out["price"], p.eps)
+    out["logit"] = transform(out["price"], p)
     # Work on a short rolling median of log-odds so a single stray print can't
     # serve as either end of a "move".
     out["level"] = out["logit"].rolling(p.smooth, min_periods=1).median()
@@ -121,7 +147,7 @@ def score_series(df: pd.DataFrame, params: DetectorParams | None = None) -> pd.D
     if "volume" in out and out["volume"].notna().any():
         vol_win = out["volume"].fillna(0).rolling(p.window).sum()
         usual = vol_win.shift(p.window).rolling(p.baseline, min_periods=p.baseline // 2).median()
-        out["volume_ratio"] = vol_win / usual.clip(lower=floor_shares(out["price"], p.min_notional))
+        out["volume_ratio"] = vol_win / usual.clip(lower=floor_shares(out["price"], p.min_notional, p.space))
         # No excess volume (ratio <= 1) earns nothing; vol_min_ratio or more earns full credit.
         out["vol_conf"] = ((out["volume_ratio"] - 1) / (p.vol_min_ratio - 1)).clip(0, 1)
     else:
@@ -139,18 +165,45 @@ def score_series(df: pd.DataFrame, params: DetectorParams | None = None) -> pd.D
     out["score"] = out["z"].abs() * out["vol_conf"] * out["persistence"]
     # Tick noise? One cent at 1% is ~0.7 logit, so a contract pinned in a tail would fire on every
     # tick. A move is scored only if at least one end sits inside [tail, 1-tail].
-    tail_now = in_tail(out["price"], p.tail)
-    out.loc[tail_now & in_tail(out["price"].shift(p.window), p.tail), "score"] = 0.0
+    if p.space == "logit":
+        tail_now = in_tail(out["price"], p.tail)
+        out.loc[tail_now & in_tail(out["price"].shift(p.window), p.tail), "score"] = 0.0
     return out
 
 
-def floor_shares(price: pd.Series, dollars: float) -> pd.Series:
-    """How many shares `dollars` at risk buys at this price: the smaller side (min(p, 1-p)) puts up the stake."""
+def floor_shares(price: pd.Series, dollars: float, space: str = "logit") -> pd.Series:
+    """How many shares `dollars` at risk buys at this price.
+
+    For a contract the smaller side (min(p, 1-p)) puts up the stake; for a stock the stake is the price.
+    """
+    if space == "log":
+        return dollars / price
     return dollars / np.minimum(price, 1 - price)
 
 
 def in_tail(price: pd.Series, tail: float) -> pd.Series:
     return (price < tail) | (price > 1 - tail)
+
+
+def _unit(p: DetectorParams) -> str:
+    return "usd" if p.space == "log" else "prob"
+
+
+def _onset(level: pd.Series, first_hot: int, p: DetectorParams) -> int:
+    """Index of the last bar before the move began.
+
+    The move lies inside the window that first cleared the threshold, `[first_hot - window, first_hot]`.
+    The peak bar can sit a whole window later while the score stays flat, so `peak - window` would put
+    the start *after* the real onset; `first_hot - window` puts it a window too early. Inside that
+    window the onset is the bar before the price had covered `onset_frac` of the window's change.
+    """
+    w0 = max(0, first_hot - p.window)
+    seg = level.iloc[w0 : first_hot + 1].to_numpy()
+    total = seg[-1] - seg[0]
+    if total == 0 or np.isnan(total):
+        return w0
+    moved = np.flatnonzero((seg - seg[0]) / total >= p.onset_frac)
+    return w0 + max(0, int(moved[0]) - 1) if moved.size else w0
 
 
 def detect_jumps(df: pd.DataFrame, market_id: str = "", params: DetectorParams | None = None) -> list[Spike]:
@@ -168,7 +221,7 @@ def detect_jumps(df: pd.DataFrame, market_id: str = "", params: DetectorParams |
         while j + 1 < n and hot.iloc[j + 1]:
             j += 1
         k = int(s["score"].iloc[i : j + 1].values.argmax()) + i  # peak bar of this run
-        start_i = max(0, k - p.window)
+        start_i = _onset(s["logit"], i, p)
         spikes.append(
             Spike(
                 market_id=market_id,
@@ -182,6 +235,7 @@ def detect_jumps(df: pd.DataFrame, market_id: str = "", params: DetectorParams |
                 volume_ratio=float(s["volume_ratio"].iloc[k]),
                 persistence=float(s["persistence"].iloc[k]),
                 score=float(s["score"].iloc[k]),
+                unit=_unit(p),
             )
         )
         i = j + 1 + p.cooldown
@@ -202,18 +256,20 @@ def detect_drifts(df: pd.DataFrame, market_id: str = "", params: DetectorParams 
     """
     p = params or DetectorParams()
     bars = df["price"].resample(f"{p.drift_bar}min").last().dropna()
-    lg = logit(bars, p.eps)
+    lg = transform(bars, p)
     d = lg.diff()
     hist = d.shift(1)
     scale = (MAD_TO_SIGMA * _rolling_mad(hist, p.drift_baseline)).clip(lower=p.min_scale)
     x = (d / scale).where(scale.notna() & hist.rolling(p.drift_baseline, min_periods=16).count().ge(16), 0)
     # Same tail rule as the jumps: a change between two tail prices is a tick, not a step.
-    x = x.where(~(in_tail(bars, p.tail) & in_tail(bars.shift(1), p.tail)), 0).fillna(0).values
+    if p.space == "logit":
+        x = x.where(~(in_tail(bars, p.tail) & in_tail(bars.shift(1), p.tail)), 0)
+    x = x.fillna(0).values
 
     has_volume = "volume" in df and df["volume"].notna().any()
     if has_volume:
         vol = df["volume"].fillna(0).resample(f"{p.drift_bar}min").sum().reindex(bars.index, fill_value=0)
-        floor = floor_shares(bars, p.min_notional * p.drift_bar / p.window)
+        floor = floor_shares(bars, p.min_notional * p.drift_bar / p.window, p.space)
         usual = vol.shift(1).rolling(p.drift_baseline, min_periods=16).median().clip(lower=floor).fillna(floor)
         vol, usual = vol.values, usual.values
 
@@ -251,6 +307,7 @@ def detect_drifts(df: pd.DataFrame, market_id: str = "", params: DetectorParams 
                     volume_ratio=float(volume_ratio),
                     persistence=1.0,
                     score=float(level * vol_conf),
+                    unit=_unit(p),
                 )
             )
             pos = neg = 0.0

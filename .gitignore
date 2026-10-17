@@ -9,3 +9,4 @@ backend/data/*.duckdb.wal
 .DS_Store
 frontend/node_modules/
 frontend/dist/
+.superpowers/

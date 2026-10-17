@@ -141,3 +141,73 @@ def test_demo_market_end_to_end():
     # nothing fires on the fat finger around bar 420
     ff = demo_market().index[420]
     assert not any(abs((s.peak - ff).total_seconds()) < 45 * 60 for s in spikes)
+
+
+# ---- log-price space (stocks) ---------------------------------------------------------
+
+from datetime import date
+
+from powerspike.detect import EQUITY_PARAMS, floor_shares
+from powerspike.synthetic import add_equity_move, equity_sessions
+
+SESSIONS = ["2025-12-09", "2025-12-10", "2025-12-11"]
+NY = "America/New_York"
+
+
+def _equity_jump(at: str = "2025-12-10 15:00", size: float = 0.03, vol_mult: float = 6.0, seed: int = 3) -> pd.DataFrame:
+    df = equity_sessions(SESSIONS, p0=180.0, noise=0.0003, seed=seed)
+    return add_equity_move(df, at=pd.Timestamp(at, tz="UTC"), size=size, vol_mult=vol_mult)
+
+
+def test_equity_jump_fires_once_in_log_space():
+    spikes = detect_jumps(_equity_jump(), "equity:TST", EQUITY_PARAMS)
+    assert len(spikes) == 1
+    s = spikes[0]
+    assert s.unit == "usd" and s.direction == "up"
+    assert abs((s.peak - pd.Timestamp("2025-12-10 15:00", tz="UTC")).total_seconds()) <= 20 * 60
+    assert s.headline().startswith("$") and "→ $" in s.headline()
+
+
+def test_quiet_equity_has_no_jumps_in_log_space():
+    for seed in range(3):
+        df = equity_sessions(SESSIONS, p0=180.0, noise=0.0003, seed=seed)
+        assert detect_jumps(df, "e", EQUITY_PARAMS) == []
+
+
+def test_equity_jump_without_volume_surge_is_damped():
+    assert detect_jumps(_equity_jump(vol_mult=1.0), "e", EQUITY_PARAMS) == []
+
+
+def test_prob_series_still_fires_in_logit_space():
+    df = add_jump(quiet_market(seed=1), at=700, size=0.9)
+    spikes = detect_jumps(df, "m", DetectorParams(space="logit"))
+    assert spikes and spikes[0].unit == "prob"
+    assert "%" in spikes[0].headline()
+
+
+def test_tail_gate_not_applied_in_log_space():
+    # The 1c -> 2c tick is gated in logit space (test_one_tick_in_the_tail_is_not_a_jump) but a
+    # $0.01 -> $0.02 doubling on heavy volume is a real move for a dollar price.
+    df = _penny_market()
+    assert detect_jumps(df, "p", DetectorParams(space="log", min_scale=0.002, min_notional=1.0))
+
+
+def test_floor_shares_usd():
+    assert float(floor_shares(pd.Series([200.0]), 1e5, "log").iloc[0]) == 500.0
+    assert float(floor_shares(pd.Series([0.2]), 100.0).iloc[0]) == 500.0  # logit branch unchanged
+
+
+def test_overnight_move_starts_at_previous_session():
+    # A gap at the open (every bar from 09:30 ET on is 4% lower, on heavy volume) spans the open:
+    # its start is the previous close.
+    df = equity_sessions(SESSIONS, p0=180.0, noise=0.0003, seed=3)
+    open_ = pd.Timestamp("2025-12-10 14:30", tz="UTC")
+    df.loc[df.index >= open_, "price"] = np.round(df.loc[df.index >= open_, "price"] * np.exp(-0.04), 2)
+    pos = int(df.index.searchsorted(open_))
+    df.iloc[pos : pos + 8, df.columns.get_loc("volume")] *= 6
+    spikes = detect_jumps(df, "e", EQUITY_PARAMS)
+    assert len(spikes) == 1
+    s = spikes[0]
+    assert s.start.tz_convert(NY).date() == date(2025, 12, 9)
+    assert s.peak.tz_convert(NY).date() == date(2025, 12, 10)
+    assert "across the open" in s.headline()

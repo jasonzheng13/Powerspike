@@ -83,13 +83,18 @@ def equity_sessions(days: list[str], p0: float = 100.0, noise: float = 0.0003, s
     return pd.DataFrame({"price": np.round(np.exp(lg), 2), "volume": vol}, index=idx)
 
 
-def add_equity_move(df: pd.DataFrame, at: pd.Timestamp, size: float, over: int = 3) -> pd.DataFrame:
-    """Shift log price by `size` over `over` bars starting at the first bar >= `at`, and keep it."""
+def add_equity_move(df: pd.DataFrame, at: pd.Timestamp, size: float, over: int = 3, vol_mult: float = 1.0) -> pd.DataFrame:
+    """Shift log price by `size` over `over` bars starting at the first bar >= `at`, and keep it.
+
+    `vol_mult` scales volume over the move bars (default 1: the lead/lag ETFs react on normal volume).
+    """
     out = df.copy()
     pos = int(out.index.searchsorted(pd.Timestamp(at)))
     lg = np.log(out["price"].to_numpy(copy=True))
     ramp = np.clip((np.arange(len(lg)) - pos) / over, 0, 1) * size
     out["price"] = np.round(np.exp(lg + ramp), 2)
+    if vol_mult != 1.0:
+        out.iloc[pos : pos + over + 5, out.columns.get_loc("volume")] *= vol_mult
     return out
 
 
