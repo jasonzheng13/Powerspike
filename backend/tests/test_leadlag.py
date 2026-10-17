@@ -214,3 +214,75 @@ def test_run_cached_scores_every_cached_market_against_cached_etfs(tmp_path):
     jump = [r for r in rows if r.kind == "jump"][0]
     assert jump.verdict == "market led"
     assert leadlag.run_cached(con, [{"id": "missing", "event_type": "fed_rates"}]) == []
+
+
+# ---- stock spike vs. the company's 24/7 contract ------------------------------------------
+
+ONSET = pd.Timestamp("2025-12-10 15:15", tz="UTC")   # 10:15 ET, in session
+C0 = pd.Timestamp("2025-12-09 00:00", tz="UTC")
+
+
+def _stock_spike(direction: str = "up") -> Spike:
+    before, after = (180.0, 186.0) if direction == "up" else (186.0, 180.0)
+    return Spike("equity:NVDA", "jump", ONSET, ONSET + 8 * MIN, ONSET + 38 * MIN, before, after, 6.0, 4.0, 1.0, 20.0, "usd")
+
+
+def _contract(jump_at: pd.Timestamp | None, size: float = 0.6) -> pd.DataFrame:
+    df = quiet_market(n=3 * 1440, p0=0.5, noise=0.006, seed=2, start="2025-12-09 00:00")
+    df["volume"] = float("nan")   # price_history carries no volume
+    if jump_at is None:
+        return df
+    return add_jump(df, at=int((jump_at - C0) / MIN), size=size, over=5)
+
+
+def test_contract_moving_before_the_stock_is_contract_led():
+    r = leadlag.react_contract(_stock_spike(), _contract(ONSET - 23 * MIN), "poly:t", event_sign=1)
+    assert r.status == "reacted" and r.verdict == "contract led"
+    assert -25 <= r.lag_min <= -19 and r.ret > 0 and r.consistent is True
+    assert r.z >= leadlag.LeadLagParams().sig_z
+    assert r.confirmed_at >= ONSET + leadlag.LeadLagParams().lookaround * MIN
+
+
+def test_contract_moving_after_the_stock_is_stock_led():
+    r = leadlag.react_contract(_stock_spike(), _contract(ONSET + 10 * MIN), "poly:t", event_sign=1)
+    assert r.verdict == "stock led" and 10 <= r.lag_min <= 14
+
+
+def test_contract_moving_with_the_stock_is_concurrent():
+    r = leadlag.react_contract(_stock_spike(), _contract(ONSET - 1 * MIN), "poly:t", event_sign=1)
+    assert r.verdict == "concurrent" and abs(r.lag_min) <= 2
+
+
+def test_flat_contract_is_quiet():
+    r = leadlag.react_contract(_stock_spike(), _contract(None), "poly:t", event_sign=1)
+    assert r.status == "quiet" and r.verdict == "contract quiet" and r.lag_min is None and r.consistent is None
+
+
+def test_missing_contract_bars_are_no_data():
+    empty = pd.DataFrame(columns=["price", "volume"])
+    assert leadlag.react_contract(_stock_spike(), empty, "poly:t", 1).verdict == "no data"
+    ends_early = quiet_market(n=1440, p0=0.5, start="2025-12-08 00:00")      # ends the day before
+    assert leadlag.react_contract(_stock_spike(), ends_early, "poly:t", 1).verdict == "no data"
+
+
+def test_contract_event_sign_flips_consistency():
+    down = _contract(ONSET - 10 * MIN, size=-0.6)   # odds fall while the stock rises
+    assert leadlag.react_contract(_stock_spike(), down, "poly:t", event_sign=1).consistent is False
+    assert leadlag.react_contract(_stock_spike(), down, "poly:t", event_sign=-1).consistent is True
+    assert leadlag.react_contract(_stock_spike("down"), down, "poly:t", event_sign=1).consistent is True
+
+
+def test_a_pinned_contract_ticking_one_cent_is_quiet():
+    # 70% with 1c ticks: in log-return units a tick would score z≈50; the logit floor keeps it quiet.
+    df = _contract(None)
+    df["price"] = 0.70
+    ticks = (df.index >= ONSET - 5 * MIN) & (df.index <= ONSET + 20 * MIN)
+    df.loc[ticks, "price"] = np.where(np.arange(ticks.sum()) % 2 == 0, 0.71, 0.70)
+    assert leadlag.react_contract(_stock_spike(), df, "poly:t", 1).verdict == "contract quiet"
+
+
+def test_contract_to_json_round_trips_nulls_and_iso_timestamps():
+    quiet = leadlag.contract_to_json(leadlag.react_contract(_stock_spike(), _contract(None), "poly:t", 1))
+    assert quiet["lag_min"] is None and quiet["reaction_at"] is None and quiet["confirmed_at"].endswith("+00:00")
+    led = leadlag.contract_to_json(leadlag.react_contract(_stock_spike(), _contract(ONSET - 23 * MIN), "poly:t", 1))
+    assert isinstance(led["lag_min"], float) and led["reaction_at"].endswith("+00:00") and led["verdict"] == "contract led"

@@ -36,6 +36,15 @@ in the same night share a reaction; the gap scale is a heuristic, not a fitted m
 
 Cross-correlation over lags was rejected for now: the market series is bursty and forward-filled,
 so 1-minute differences are mostly zero and a correlation would hinge on a handful of bars.
+
+**Stock spike vs. the company's contract** (`react_contract`): the roles are swapped. The spike is
+on a stock (session bars, detected in log-price space) and the reacting series is a Polymarket
+contract on a 24/7 one-minute grid. The contract is scored in log-odds (`contract_z`: the
+detector's robust z of the `window`-bar logit change, floored at `contract_min_scale` logit units
+so a one-cent tick on a pinned contract is not a reaction) with no session grouping and no opening
+gap. The search window is `lookaround` minutes either side of `spike.start`, the lag is wall-clock
+minutes from the onset to the first hot bar (negative: the contract moved first), and the verdict
+is "contract led" / "stock led" / "concurrent" / "contract quiet" / "no data".
 """
 
 from __future__ import annotations
@@ -46,7 +55,7 @@ from dataclasses import asdict, dataclass
 import numpy as np
 import pandas as pd
 
-from .detect import Spike, robust_scale, robust_z
+from .detect import Spike, logit, robust_scale, robust_z
 from .ingest.equities import NY, in_session, next_open
 
 SESSION_BARS = 390  # 09:30-16:00 at one bar a minute
@@ -64,6 +73,8 @@ class LeadLagParams:
     min_bars: int = 30          # scored bars needed after the origin before "quiet" means anything
     min_reactions: int = 2      # reacting ETFs needed for a verdict (or all of them when fewer are configured)
     concurrent_min: float = 2   # |median lag| within this many trading minutes is "concurrent"
+    contract_min_scale: float = 0.05  # floor on a contract's robust scale, in logit units (the detector's own floor);
+                                      # `min_scale` is in log-return units and would score a 1c tick at z≈50
 
 
 @dataclass
@@ -78,6 +89,21 @@ class EtfReaction:
     consistent: bool | None
     after_hours: bool               # market onset outside the session; measured from the next open
     spans_close: bool               # the search window continued into the next session
+    confirmed_at: pd.Timestamp
+
+
+@dataclass
+class ContractReaction:
+    """How the company's contract behaved around a stock spike (see the module docstring)."""
+    contract_id: str
+    status: str                      # "reacted" | "quiet" | "no_data"
+    reaction_at: pd.Timestamp | None # first bar where the contract's move became detectable
+    lag_min: float | None            # wall-clock minutes after the stock's onset; negative = contract first
+    z: float | None
+    ret: float | None                # the contract's logit change at the biggest bar of the first reacting run
+    expected_move: int               # stock direction x event_sign: the sign the contract "should" show
+    consistent: bool | None
+    verdict: str                     # "contract led" | "stock led" | "concurrent" | "contract quiet" | "no data"
     confirmed_at: pd.Timestamp
 
 
@@ -115,6 +141,36 @@ def equity_z(df: pd.DataFrame, params: LeadLagParams | None = None) -> pd.DataFr
     return out
 
 
+def contract_z(df: pd.DataFrame, params: LeadLagParams | None = None) -> pd.DataFrame:
+    """Per bar of a 24/7 contract grid: `move` (window logit change), `mz` (its robust z) and `hot`."""
+    p = params or LeadLagParams()
+    out = df.copy()
+    out["level"] = logit(out["price"].astype(float))
+    out["delta"] = out["level"] - out["level"].shift(p.window)
+    out["z"] = robust_z(out["delta"], p.baseline, p.contract_min_scale, lag=p.window)
+    out["move"], out["mz"] = out["delta"], out["z"]
+    out["hot"] = (out["mz"].abs() >= p.sig_z) & out["mz"].notna()
+    return out
+
+
+def _first_reaction(s: pd.DataFrame, lo: int, pos: int, hi: int, p: LeadLagParams
+                    ) -> tuple[str, int | None, pd.DataFrame | None]:
+    """Search bars [lo, hi] of a scored frame for the first hot run: (status, first bar index, the run)."""
+    idx = s.index
+    win = s.iloc[lo : hi + 1]
+    forward = win.iloc[pos - lo :]
+    if forward["mz"].notna().sum() < min(p.min_bars, p.lookaround + 1) and not forward["hot"].any():
+        return "no_data", None, None
+    hot = win.index[win["hot"].to_numpy()]
+    if len(hot) == 0:
+        return "quiet", None, None
+    first_i = int(idx.get_loc(hot[0]))
+    run_end = first_i
+    while run_end + 1 <= hi and run_end + 1 < len(idx) and bool(s["hot"].iloc[run_end + 1]):
+        run_end += 1
+    return "reacted", first_i, s.iloc[first_i : run_end + 1]
+
+
 def react(spike: Spike, etf: pd.DataFrame, ticker: str, expected_move: int,
           params: LeadLagParams | None = None) -> EtfReaction:
     p = params or LeadLagParams()
@@ -137,24 +193,49 @@ def react(spike: Spike, etf: pd.DataFrame, ticker: str, expected_move: int,
     complete = hi < len(idx)
     confirmed_at = max(pd.Timestamp(spike.confirmed_at), idx[hi]) if complete else fallback_confirm
     spans_close = complete and idx[hi].tz_convert(NY).date() != idx[pos].tz_convert(NY).date()
-    win = s.iloc[lo : hi + 1]
-    forward = win.iloc[pos - lo :]
-    if forward["mz"].notna().sum() < min(p.min_bars, p.lookaround + 1) and not forward["hot"].any():
-        return none("no_data", confirmed_at, spans_close)
-    hot = win.index[win["hot"].to_numpy()]
-    if len(hot) == 0:
-        return none("quiet", confirmed_at, spans_close)
-    first = hot[0]
-    first_i = int(idx.get_loc(first))
-    run_end = first_i
-    while run_end + 1 <= hi and run_end + 1 < len(idx) and bool(s["hot"].iloc[run_end + 1]):
-        run_end += 1
-    run = s.iloc[first_i : run_end + 1]
+    status, first_i, run = _first_reaction(s, lo, pos, hi, p)
+    if status != "reacted":
+        return none(status, confirmed_at, spans_close)
     big = run["mz"].abs().idxmax()
     ret, z = float(run.loc[big, "move"]), float(run.loc[big, "mz"])
     consistent = None if expected_move == 0 else bool(np.sign(ret) == expected_move)
-    return EtfReaction(ticker, "reacted", first, float(first_i - pos), z, ret, expected_move,
+    return EtfReaction(ticker, "reacted", idx[first_i], float(first_i - pos), z, ret, expected_move,
                        consistent, after_hours, spans_close, confirmed_at)
+
+
+def react_contract(spike: Spike, contract: pd.DataFrame, contract_id: str, event_sign: int,
+                   params: LeadLagParams | None = None) -> ContractReaction:
+    """Did the company's contract move before or after this stock spike? (Roles swapped: see docstring.)"""
+    p = params or LeadLagParams()
+    onset = pd.Timestamp(spike.start)
+    stock_sign = 1 if spike.direction == "up" else -1
+    expected_move = stock_sign * int(event_sign)
+    fallback_confirm = max(pd.Timestamp(spike.confirmed_at), onset + pd.Timedelta(minutes=p.lookaround))
+
+    def none(status: str, verdict: str, confirmed_at: pd.Timestamp) -> ContractReaction:
+        return ContractReaction(contract_id, status, None, None, None, None, expected_move, None, verdict, confirmed_at)
+
+    if contract.empty:
+        return none("no_data", "no data", fallback_confirm)
+    s = contract_z(contract, p)
+    idx = s.index
+    pos = int(idx.searchsorted(onset))
+    if pos >= len(idx):
+        return none("no_data", "no data", fallback_confirm)
+    lo, hi = max(0, pos - p.lookaround), pos + p.lookaround
+    confirmed_at = max(pd.Timestamp(spike.confirmed_at), idx[hi]) if hi < len(idx) else fallback_confirm
+    status, first_i, run = _first_reaction(s, lo, pos, hi, p)
+    if status == "no_data":
+        return none(status, "no data", confirmed_at)
+    if status == "quiet":
+        return none(status, "contract quiet", confirmed_at)
+    big = run["mz"].abs().idxmax()
+    ret, z = float(run.loc[big, "move"]), float(run.loc[big, "mz"])
+    reaction_at = idx[first_i]
+    lag = (reaction_at - onset).total_seconds() / 60   # wall clock: the grid can have holes between pulls
+    verdict = "contract led" if lag < -p.concurrent_min else "stock led" if lag > p.concurrent_min else "concurrent"
+    return ContractReaction(contract_id, "reacted", reaction_at, float(lag), z, ret, expected_move,
+                            bool(np.sign(ret) == expected_move), verdict, confirmed_at)
 
 
 def lead_lag(spike: Spike, equities: dict[str, pd.DataFrame], expected: dict[str, int],
@@ -231,6 +312,13 @@ def _iso(ts) -> str | None:
 
 def _num(x) -> float | None:
     return None if x is None or (isinstance(x, float) and math.isnan(x)) else float(x)
+
+
+def contract_to_json(r: ContractReaction) -> dict:
+    d = asdict(r)
+    d["reaction_at"], d["confirmed_at"] = _iso(r.reaction_at), _iso(r.confirmed_at)
+    d["lag_min"], d["z"], d["ret"] = _num(r.lag_min), _num(r.z), _num(r.ret)
+    return d
 
 
 def to_json(ll: LeadLag) -> dict:
