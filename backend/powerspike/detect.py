@@ -45,6 +45,8 @@ class DetectorParams:
     cusum_h: float = 6.0        # CUSUM alarm level, in robust-sigma units
     eps: float = 0.005          # clip prices to [eps, 1-eps] before logit
     onset_frac: float = 0.2     # a jump's `start` is the bar before the price had covered this share of the first hot window's change
+    gap_stretch: float = 1.0    # session-only bars: a window that spans the open is an overnight move, scored on a scale this many
+                                # times the intraday one (measured ~6x on large caps). 1 = no sessions (24/7 contracts)
     space: Literal["logit", "log"] = "logit"  # "log": price is dollars; moves are log returns, min_scale is in
                                 # log-return units, min_notional converts to shares as dollars / price, and the
                                 # tail gate is off (there is no settled end of a dollar price)
@@ -53,8 +55,13 @@ class DetectorParams:
 # Stocks: dollar prices on session-only 1-minute bars. Every shift in `score_series` is positional,
 # so the overnight gap is simply one more bar: a move in the first bars of a session has its `start`
 # at the previous close and `p_before` is roughly that close, and a move at 15:50 ET is confirmed the
-# next morning. That is deliberate: the gap *is* the move the overnight news caused.
-EQUITY_PARAMS = DetectorParams(space="log", min_scale=0.002, min_notional=1e5)
+# next morning. That is deliberate: the gap *is* the move the overnight news caused, but it is judged
+# on the gap scale (`gap_stretch`). Calibrated 2026-10-17 on 30 days of NVDA/TSLA/AAPL/MSFT: the
+# overnight gap's robust scale is ~6x the 15-minute one on all four; stretch 4 keeps the month's two
+# largest gaps (+2.9%, +4.3%) while routine 1% gaps no longer fire. min_scale 0.002 is just above the
+# intraday scale (0.0016-0.0022), so a quiet ticker cannot fire on noise. Result: 5 / 12 / 3 / 7 jumps
+# per 30 days, every one a 1-4% move on 2-40x volume (scripts/calibrate_stocks.py --show).
+EQUITY_PARAMS = DetectorParams(space="log", min_scale=0.002, min_notional=1e5, gap_stretch=4.0)
 
 
 @dataclass
@@ -134,12 +141,23 @@ def score_series(df: pd.DataFrame, params: DetectorParams | None = None) -> pd.D
     out["logit"] = transform(out["price"], p)
     # Work on a short rolling median of log-odds so a single stray print can't
     # serve as either end of a "move".
-    out["level"] = out["logit"].rolling(p.smooth, min_periods=1).median()
+    sessions = pd.Series(out.index.tz_convert(NY).date, index=out.index) if p.gap_stretch != 1.0 else None
+    if sessions is not None:
+        # Session-only bars: smooth within each session, or the median at the open would still be the
+        # previous close for `smooth` bars and leak the gap into windows that start after it.
+        out["level"] = out["logit"].groupby(sessions).transform(lambda x: x.rolling(p.smooth, min_periods=1).median())
+    else:
+        out["level"] = out["logit"].rolling(p.smooth, min_periods=1).median()
     out["delta"] = out["level"] - out["level"].shift(p.window)
 
     # Big? Compare this window's change with past window changes. Lag by `window`
     # so the baseline never overlaps the move being scored.
     out["z"] = robust_z(out["delta"], p.baseline, p.min_scale, lag=p.window)
+    if sessions is not None:
+        # A window reaching back across the open measures an overnight move, which is routinely several
+        # intraday scales wide. Judge it on the gap scale instead.
+        spans_open = sessions.ne(sessions.shift(p.window)) & sessions.shift(p.window).notna()
+        out.loc[spans_open, "z"] = out.loc[spans_open, "z"] / p.gap_stretch
 
     # Real money? Window volume vs. its usual level (median of past windows). The floor on "usual"
     # is a dollar amount converted to shares at the current price, so 500 contracts at 1c ($5) earn

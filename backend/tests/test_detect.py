@@ -211,3 +211,16 @@ def test_overnight_move_starts_at_previous_session():
     assert s.start.tz_convert(NY).date() == date(2025, 12, 9)
     assert s.peak.tz_convert(NY).date() == date(2025, 12, 10)
     assert "across the open" in s.headline()
+
+
+def test_routine_overnight_gap_is_not_a_spike_but_the_same_move_intraday_is():
+    # A 1% gap at the open is an ordinary night for a large-cap; a 1% move in 15 minutes mid-session is not.
+    open_ = pd.Timestamp("2025-12-10 14:30", tz="UTC")
+    gapped = equity_sessions(SESSIONS, p0=180.0, noise=0.0003, seed=3)
+    gapped.loc[gapped.index >= open_, "price"] = np.round(gapped.loc[gapped.index >= open_, "price"] * np.exp(0.01), 2)
+    pos = int(gapped.index.searchsorted(open_))
+    gapped.iloc[pos : pos + 8, gapped.columns.get_loc("volume")] *= 6
+    assert detect_jumps(gapped, "e", EQUITY_PARAMS) == []
+    intraday = _equity_jump(at="2025-12-10 16:00", size=0.01)
+    assert len(detect_jumps(intraday, "e", EQUITY_PARAMS)) == 1
+    assert EQUITY_PARAMS.gap_stretch > 1 and DetectorParams().gap_stretch == 1.0

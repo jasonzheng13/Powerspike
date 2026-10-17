@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections import OrderedDict
 from dataclasses import asdict
 from functools import lru_cache
 from typing import Any
@@ -137,20 +138,37 @@ def _reactions(ticker: str, days: int, token: str, ctoken: str | None) -> tuple[
     return tuple(leadlag.contract_to_json(leadlag.react_contract(s, cdf, c["id"], c["event_sign"])) for s in spikes)
 
 
-_explain_memo: dict[str, dict] = {}   # keyed on the spike's identity, not its JSON bytes (a client may re-serialise numbers)
+EXPLAIN_MEMO_SIZE = 1024
+_explain_memo: OrderedDict[str, dict] = OrderedDict()   # bounded LRU keyed on the spike's identity, server-detected spikes only
 
 
 def _explanation(ticker: str, s: Spike) -> dict:
+    """Headlines + theme-tagged explanation for a spike the server detected (never a client-supplied one)."""
     company = stocks.company(ticker)
     key = f"{ticker}|{s.kind}|{_iso(s.peak)}|{company['news_query']}"
     hit = _explain_memo.get(key)
     if hit is not None:
+        _explain_memo.move_to_end(key)
         return hit
     start, end = news_window(s)
     heads = headlines(company["news_query"], start, end)
     out = {**explain_stock(s, company, heads), "headlines": heads}
     _explain_memo[key] = out
+    while len(_explain_memo) > EXPLAIN_MEMO_SIZE:
+        _explain_memo.popitem(last=False)
     return out
+
+
+def _server_spike(ticker: str, days: int, token: str, ref: dict[str, Any]) -> Spike:
+    """The server's own Spike matching a client's (kind, peak) reference, or 404."""
+    try:
+        kind, peak = str(ref["kind"]), pd.Timestamp(ref["peak"])
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(422, "spike must carry 'kind' and an ISO 'peak'")
+    for s in _spikes(ticker, days, token):
+        if s.kind == kind and s.peak == peak:
+            return s
+    raise HTTPException(404, f"no {kind} spike at {ref.get('peak')} for {ticker!r}")
 
 
 def _bucket() -> int:
@@ -246,9 +264,15 @@ class ExplainRequest(BaseModel):
 
 
 @app.post("/api/stocks/{ticker}/explain")
-def stock_explain(ticker: str, req: ExplainRequest) -> dict:
-    """Why this spike happened: headlines around it plus a theme-tagged explanation. Memoised per spike."""
-    return _explanation(ticker.upper(), spike_from_json(req.spike))
+def stock_explain(ticker: str, req: ExplainRequest, days: int = Query(30)) -> dict:
+    """Why this spike happened: headlines around it plus a theme-tagged explanation. Memoised per spike.
+
+    The body's spike is only a reference (`kind`, `peak`); the server explains its own detected copy,
+    so client fields never reach the prompt or the memo.
+    """
+    ticker, days = ticker.upper(), _days(days)
+    token = _token(ticker, days)
+    return _explanation(ticker, _server_spike(ticker, days, token, req.spike))
 
 
 @app.get("/api/climate")
